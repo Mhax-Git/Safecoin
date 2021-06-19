@@ -1,16 +1,25 @@
 // @flow
+
+import {expect} from 'chai';
+
 import {clusterApiUrl} from '../src/util/cluster';
 
-test('invalid', () => {
-  expect(() => {
-    // $FlowExpectedError
-    clusterApiUrl('abc123');
-  }).toThrow();
-});
+describe('Cluster Util', () => {
+  it('invalid', () => {
+    expect(() => {
+      // $FlowExpectedError
+      clusterApiUrl('abc123');
+    }).to.throw();
+  });
 
-test('devnet', () => {
-  expect(clusterApiUrl()).toEqual('https://devnet.safecoin.org');
-  expect(clusterApiUrl('devnet')).toEqual('https://devnet.safecoin.org');
-  expect(clusterApiUrl('devnet', true)).toEqual('https://devnet.safecoin.org');
-  expect(clusterApiUrl('devnet', false)).toEqual('http://devnet.safecoin.org');
+  it('devnet', () => {
+    expect(clusterApiUrl()).to.eq('https://api.devnet.safecoin.org');
+    expect(clusterApiUrl('devnet')).to.eq('https://api.devnet.safecoin.org');
+    expect(clusterApiUrl('devnet', true)).to.eq(
+      'https://api.devnet.safecoin.org',
+    );
+    expect(clusterApiUrl('devnet', false)).to.eq(
+      'http://api.devnet.safecoin.org',
+    );
+  });
 });

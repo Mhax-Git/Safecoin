@@ -156,7 +156,7 @@ FLAGS:
 
 OPTIONS:
     -d, --data_dir <PATH>    Directory to store install data [default: .../Library/Application Support/solana]
-    -u, --url <URL>          JSON RPC URL for the safecoin cluster [default: http://devnet.safecoin.org]
+    -u, --url <URL>          JSON RPC URL for the safecoin cluster [default: http://api.devnet.safecoin.org]
     -p, --pubkey <PUBKEY>    Public key of the update manifest [default: 9XX329sPuskWhH4DQh6k16c87dHKhXLBZTL3Gxmve8Gp]
 ```
 

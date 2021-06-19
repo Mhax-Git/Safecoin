@@ -1,10 +1,13 @@
 <p align="center">
   <a href="https://solana.com">
-    <img alt="Safecoin" src="https://raw.githubusercontent.com/Fair-Exchange/safecoinwiki/master/Logos/SafeCoin/SafeCoin-Logo-with-text.png"/>
+    <img alt="Safecoin" src="https://i.imgur.com/OMnvVEz.png" width="250" />
   </a>
 </p>
 
-[![twitter](https://img.shields.io/twitter/follow/safecoins?style=social)](https://twitter.com/safecoins)
+[![Safecoin crate](https://img.shields.io/crates/v/solana-core.svg)](https://crates.io/crates/solana-core)
+[![Safecoin documentation](https://docs.rs/solana-core/badge.svg)](https://docs.rs/solana-core)
+[![Build status](https://badge.buildkite.com/8cc350de251d61483db98bdfc895b9ea0ac8ffa4a32ee850ed.svg?branch=master)](https://buildkite.com/solana-labs/solana/builds?branch=master)
+[![codecov](https://codecov.io/gh/solana-labs/solana/branch/master/graph/badge.svg)](https://codecov.io/gh/solana-labs/solana)
 
 # Building
 
@@ -32,8 +35,8 @@ $ sudo apt-get install libssl-dev libudev-dev pkg-config zlib1g-dev llvm clang m
 ## **2. Download the source code.**
 
 ```bash
-$ git clone https://github.com/Fair-Exchange/SAFECOIN.git
-$ cd SAFECOIN
+$ git clone https://github.com/solana-labs/solana.git
+$ cd solana
 ```
 
 ## **3. Build.**

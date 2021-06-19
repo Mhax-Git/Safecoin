@@ -1,10 +1,13 @@
+#![allow(clippy::integer_arithmetic)]
 #[macro_use]
 extern crate lazy_static;
 
-use clap::{crate_description, crate_name, App, AppSettings, Arg, ArgMatches, SubCommand};
-use solana_clap_utils::{
-    input_parsers::pubkey_of,
-    input_validators::{is_pubkey, is_url},
+use {
+    clap::{crate_description, crate_name, App, AppSettings, Arg, ArgMatches, SubCommand},
+    solana_clap_utils::{
+        input_parsers::pubkey_of,
+        input_validators::{is_pubkey, is_url},
+    },
 };
 
 mod build_env;
@@ -157,9 +160,7 @@ pub fn main() -> Result<(), String> {
                     Arg::with_name("local_info_only")
                         .short("l")
                         .long("local")
-                        .help(
-                        "only display local information, don't check the cluster for new updates",
-                    ),
+                        .help("only display local information, don't check for updates"),
                 )
                 .arg(
                     Arg::with_name("eval")
@@ -261,7 +262,7 @@ pub fn main() -> Result<(), String> {
             )
         }
         ("gc", Some(_matches)) => command::gc(config_file),
-        ("update", Some(_matches)) => command::update(config_file).map(|_| ()),
+        ("update", Some(_matches)) => command::update(config_file, false).map(|_| ()),
         ("run", Some(matches)) => {
             let program_name = matches.value_of("program_name").unwrap();
             let program_arguments = matches

@@ -28,8 +28,9 @@ fn test_cli_program_deploy_non_upgradeable() {
     pathbuf.set_extension("so");
 
     let mint_keypair = Keypair::new();
-    let test_validator = TestValidator::with_no_fees(mint_keypair.pubkey());
+    let mint_pubkey = mint_keypair.pubkey();
     let faucet_addr = run_local_faucet(mint_keypair, None);
+    let test_validator = TestValidator::with_no_fees(mint_pubkey, Some(faucet_addr));
 
     let rpc_client =
         RpcClient::new_with_commitment(test_validator.rpc_url(), CommitmentConfig::processed());
@@ -46,8 +47,6 @@ fn test_cli_program_deploy_non_upgradeable() {
     config.json_rpc_url = test_validator.rpc_url();
     config.signers = vec![&keypair];
     config.command = CliCommand::Airdrop {
-        faucet_host: None,
-        faucet_port: faucet_addr.port(),
         pubkey: None,
         lamports: 4 * minimum_balance_for_rent_exemption, // min balance for rent exemption for three programs + leftover for tx processing
     };
@@ -104,8 +103,6 @@ fn test_cli_program_deploy_non_upgradeable() {
     let custom_address_keypair = Keypair::new();
     config.signers = vec![&custom_address_keypair];
     config.command = CliCommand::Airdrop {
-        faucet_host: None,
-        faucet_port: faucet_addr.port(),
         pubkey: None,
         lamports: 2 * minimum_balance_for_rent_exemption, // Anything over minimum_balance_for_rent_exemption should trigger err
     };
@@ -147,8 +144,9 @@ fn test_cli_program_deploy_no_authority() {
     pathbuf.set_extension("so");
 
     let mint_keypair = Keypair::new();
-    let test_validator = TestValidator::with_no_fees(mint_keypair.pubkey());
+    let mint_pubkey = mint_keypair.pubkey();
     let faucet_addr = run_local_faucet(mint_keypair, None);
+    let test_validator = TestValidator::with_no_fees(mint_pubkey, Some(faucet_addr));
 
     let rpc_client =
         RpcClient::new_with_commitment(test_validator.rpc_url(), CommitmentConfig::processed());
@@ -171,8 +169,6 @@ fn test_cli_program_deploy_no_authority() {
     let keypair = Keypair::new();
     config.json_rpc_url = test_validator.rpc_url();
     config.command = CliCommand::Airdrop {
-        faucet_host: None,
-        faucet_port: faucet_addr.port(),
         pubkey: None,
         lamports: 100 * minimum_balance_for_programdata + minimum_balance_for_program,
     };
@@ -231,8 +227,9 @@ fn test_cli_program_deploy_with_authority() {
     pathbuf.set_extension("so");
 
     let mint_keypair = Keypair::new();
-    let test_validator = TestValidator::with_no_fees(mint_keypair.pubkey());
+    let mint_pubkey = mint_keypair.pubkey();
     let faucet_addr = run_local_faucet(mint_keypair, None);
+    let test_validator = TestValidator::with_no_fees(mint_pubkey, Some(faucet_addr));
 
     let rpc_client =
         RpcClient::new_with_commitment(test_validator.rpc_url(), CommitmentConfig::processed());
@@ -256,8 +253,6 @@ fn test_cli_program_deploy_with_authority() {
     config.json_rpc_url = test_validator.rpc_url();
     config.signers = vec![&keypair];
     config.command = CliCommand::Airdrop {
-        faucet_host: None,
-        faucet_port: faucet_addr.port(),
         pubkey: None,
         lamports: 100 * minimum_balance_for_programdata + minimum_balance_for_program,
     };
@@ -442,6 +437,9 @@ fn test_cli_program_deploy_with_authority() {
     config.signers = vec![&keypair];
     config.command = CliCommand::Program(ProgramCliCommand::Show {
         account_pubkey: Some(program_pubkey),
+        authority_pubkey: keypair.pubkey(),
+        all: false,
+        use_lamports_unit: false,
     });
     let response = process_command(&config);
     let json: Value = serde_json::from_str(&response.unwrap()).unwrap();
@@ -530,6 +528,9 @@ fn test_cli_program_deploy_with_authority() {
     config.signers = vec![&keypair];
     config.command = CliCommand::Program(ProgramCliCommand::Show {
         account_pubkey: Some(program_pubkey),
+        authority_pubkey: keypair.pubkey(),
+        all: false,
+        use_lamports_unit: false,
     });
     let response = process_command(&config);
     let json: Value = serde_json::from_str(&response.unwrap()).unwrap();
@@ -554,8 +555,9 @@ fn test_cli_program_write_buffer() {
     pathbuf.set_extension("so");
 
     let mint_keypair = Keypair::new();
-    let test_validator = TestValidator::with_no_fees(mint_keypair.pubkey());
+    let mint_pubkey = mint_keypair.pubkey();
     let faucet_addr = run_local_faucet(mint_keypair, None);
+    let test_validator = TestValidator::with_no_fees(mint_pubkey, Some(faucet_addr));
 
     let rpc_client =
         RpcClient::new_with_commitment(test_validator.rpc_url(), CommitmentConfig::processed());
@@ -571,7 +573,7 @@ fn test_cli_program_write_buffer() {
         .unwrap();
     let minimum_balance_for_buffer_default = rpc_client
         .get_minimum_balance_for_rent_exemption(
-            UpgradeableLoaderState::programdata_len(max_len * 2).unwrap(),
+            UpgradeableLoaderState::programdata_len(max_len).unwrap(),
         )
         .unwrap();
 
@@ -580,8 +582,6 @@ fn test_cli_program_write_buffer() {
     config.json_rpc_url = test_validator.rpc_url();
     config.signers = vec![&keypair];
     config.command = CliCommand::Airdrop {
-        faucet_host: None,
-        faucet_port: faucet_addr.port(),
         pubkey: None,
         lamports: 100 * minimum_balance_for_buffer,
     };
@@ -657,9 +657,12 @@ fn test_cli_program_write_buffer() {
     );
 
     // Get buffer authority
-    config.signers = vec![&keypair];
+    config.signers = vec![];
     config.command = CliCommand::Program(ProgramCliCommand::Show {
         account_pubkey: Some(buffer_keypair.pubkey()),
+        authority_pubkey: keypair.pubkey(),
+        all: false,
+        use_lamports_unit: false,
     });
     let response = process_command(&config);
     let json: Value = serde_json::from_str(&response.unwrap()).unwrap();
@@ -747,9 +750,12 @@ fn test_cli_program_write_buffer() {
     );
 
     // Get buffer authority
-    config.signers = vec![&keypair];
+    config.signers = vec![];
     config.command = CliCommand::Program(ProgramCliCommand::Show {
         account_pubkey: Some(buffer_pubkey),
+        authority_pubkey: keypair.pubkey(),
+        all: false,
+        use_lamports_unit: false,
     });
     let response = process_command(&config);
     let json: Value = serde_json::from_str(&response.unwrap()).unwrap();
@@ -764,6 +770,60 @@ fn test_cli_program_write_buffer() {
         authority_keypair.pubkey(),
         Pubkey::from_str(&authority_pubkey_str).unwrap()
     );
+
+    // Close buffer
+    let close_account = rpc_client.get_account(&buffer_pubkey).unwrap();
+    assert_eq!(minimum_balance_for_buffer, close_account.lamports);
+    let recipient_pubkey = Pubkey::new_unique();
+    config.signers = vec![&keypair, &authority_keypair];
+    config.command = CliCommand::Program(ProgramCliCommand::Close {
+        account_pubkey: Some(buffer_pubkey),
+        recipient_pubkey,
+        authority_index: 1,
+        use_lamports_unit: false,
+    });
+    process_command(&config).unwrap();
+    rpc_client.get_account(&buffer_pubkey).unwrap_err();
+    let recipient_account = rpc_client.get_account(&recipient_pubkey).unwrap();
+    assert_eq!(minimum_balance_for_buffer, recipient_account.lamports);
+
+    // Write a buffer with default params
+    config.signers = vec![&keypair];
+    config.command = CliCommand::Program(ProgramCliCommand::WriteBuffer {
+        program_location: pathbuf.to_str().unwrap().to_string(),
+        buffer_signer_index: None,
+        buffer_pubkey: None,
+        buffer_authority_signer_index: None,
+        max_len: None,
+    });
+    config.output_format = OutputFormat::JsonCompact;
+    let response = process_command(&config);
+    let json: Value = serde_json::from_str(&response.unwrap()).unwrap();
+    let buffer_pubkey_str = json
+        .as_object()
+        .unwrap()
+        .get("buffer")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    let new_buffer_pubkey = Pubkey::from_str(&buffer_pubkey_str).unwrap();
+
+    // Close buffers and deposit default keypair
+    let pre_lamports = rpc_client.get_account(&keypair.pubkey()).unwrap().lamports;
+    config.signers = vec![&keypair];
+    config.command = CliCommand::Program(ProgramCliCommand::Close {
+        account_pubkey: Some(new_buffer_pubkey),
+        recipient_pubkey: keypair.pubkey(),
+        authority_index: 0,
+        use_lamports_unit: false,
+    });
+    process_command(&config).unwrap();
+    rpc_client.get_account(&new_buffer_pubkey).unwrap_err();
+    let recipient_account = rpc_client.get_account(&keypair.pubkey()).unwrap();
+    assert_eq!(
+        pre_lamports + minimum_balance_for_buffer,
+        recipient_account.lamports
+    );
 }
 
 #[test]
@@ -777,8 +837,9 @@ fn test_cli_program_set_buffer_authority() {
     pathbuf.set_extension("so");
 
     let mint_keypair = Keypair::new();
-    let test_validator = TestValidator::with_no_fees(mint_keypair.pubkey());
+    let mint_pubkey = mint_keypair.pubkey();
     let faucet_addr = run_local_faucet(mint_keypair, None);
+    let test_validator = TestValidator::with_no_fees(mint_pubkey, Some(faucet_addr));
 
     let rpc_client =
         RpcClient::new_with_commitment(test_validator.rpc_url(), CommitmentConfig::processed());
@@ -798,8 +859,6 @@ fn test_cli_program_set_buffer_authority() {
     config.json_rpc_url = test_validator.rpc_url();
     config.signers = vec![&keypair];
     config.command = CliCommand::Airdrop {
-        faucet_host: None,
-        faucet_port: faucet_addr.port(),
         pubkey: None,
         lamports: 100 * minimum_balance_for_buffer,
     };
@@ -891,8 +950,9 @@ fn test_cli_program_mismatch_buffer_authority() {
     pathbuf.set_extension("so");
 
     let mint_keypair = Keypair::new();
-    let test_validator = TestValidator::with_no_fees(mint_keypair.pubkey());
+    let mint_pubkey = mint_keypair.pubkey();
     let faucet_addr = run_local_faucet(mint_keypair, None);
+    let test_validator = TestValidator::with_no_fees(mint_pubkey, Some(faucet_addr));
 
     let rpc_client =
         RpcClient::new_with_commitment(test_validator.rpc_url(), CommitmentConfig::processed());
@@ -912,8 +972,6 @@ fn test_cli_program_mismatch_buffer_authority() {
     config.json_rpc_url = test_validator.rpc_url();
     config.signers = vec![&keypair];
     config.command = CliCommand::Airdrop {
-        faucet_host: None,
-        faucet_port: faucet_addr.port(),
         pubkey: None,
         lamports: 100 * minimum_balance_for_buffer,
     };
@@ -981,8 +1039,9 @@ fn test_cli_program_show() {
     pathbuf.set_extension("so");
 
     let mint_keypair = Keypair::new();
-    let test_validator = TestValidator::with_no_fees(mint_keypair.pubkey());
+    let mint_pubkey = mint_keypair.pubkey();
     let faucet_addr = run_local_faucet(mint_keypair, None);
+    let test_validator = TestValidator::with_no_fees(mint_pubkey, Some(faucet_addr));
 
     let rpc_client =
         RpcClient::new_with_commitment(test_validator.rpc_url(), CommitmentConfig::processed());
@@ -1005,8 +1064,6 @@ fn test_cli_program_show() {
     // Airdrop
     config.signers = vec![&keypair];
     config.command = CliCommand::Airdrop {
-        faucet_host: None,
-        faucet_port: faucet_addr.port(),
         pubkey: None,
         lamports: 100 * minimum_balance_for_buffer,
     };
@@ -1029,6 +1086,9 @@ fn test_cli_program_show() {
     config.signers = vec![&keypair];
     config.command = CliCommand::Program(ProgramCliCommand::Show {
         account_pubkey: Some(buffer_keypair.pubkey()),
+        authority_pubkey: keypair.pubkey(),
+        all: false,
+        use_lamports_unit: false,
     });
     let response = process_command(&config);
     let json: Value = serde_json::from_str(&response.unwrap()).unwrap();
@@ -1078,13 +1138,17 @@ fn test_cli_program_show() {
         max_len: Some(max_len),
     });
     config.output_format = OutputFormat::JsonCompact;
+    let min_slot = rpc_client.get_slot().unwrap();
     process_command(&config).unwrap();
-    let slot = rpc_client.get_slot().unwrap();
+    let max_slot = rpc_client.get_slot().unwrap();
 
     // Verify show
     config.signers = vec![&keypair];
     config.command = CliCommand::Program(ProgramCliCommand::Show {
         account_pubkey: Some(program_keypair.pubkey()),
+        authority_pubkey: keypair.pubkey(),
+        all: false,
+        use_lamports_unit: false,
     });
     let response = process_command(&config);
     let json: Value = serde_json::from_str(&response.unwrap()).unwrap();
@@ -1132,7 +1196,8 @@ fn test_cli_program_show() {
         .unwrap()
         .as_u64()
         .unwrap();
-    assert_eq!(slot, deployed_slot);
+    assert!(deployed_slot >= min_slot);
+    assert!(deployed_slot <= max_slot);
     let data_len = json
         .as_object()
         .unwrap()
@@ -1154,8 +1219,9 @@ fn test_cli_program_dump() {
     pathbuf.set_extension("so");
 
     let mint_keypair = Keypair::new();
-    let test_validator = TestValidator::with_no_fees(mint_keypair.pubkey());
+    let mint_pubkey = mint_keypair.pubkey();
     let faucet_addr = run_local_faucet(mint_keypair, None);
+    let test_validator = TestValidator::with_no_fees(mint_pubkey, Some(faucet_addr));
 
     let rpc_client =
         RpcClient::new_with_commitment(test_validator.rpc_url(), CommitmentConfig::processed());
@@ -1178,8 +1244,6 @@ fn test_cli_program_dump() {
     // Airdrop
     config.signers = vec![&keypair];
     config.command = CliCommand::Airdrop {
-        faucet_host: None,
-        faucet_port: faucet_addr.port(),
         pubkey: None,
         lamports: 100 * minimum_balance_for_buffer,
     };

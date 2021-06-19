@@ -2,6 +2,7 @@
 #
 # Downloads and runs the latest stake-o-matic binary
 #
+set -e
 
 solana_version=edge
 curl -sSf https://raw.githubusercontent.com/solana-labs/solana/v1.0.0/install/safecoin-install-init.sh \
@@ -10,7 +11,8 @@ curl -sSf https://raw.githubusercontent.com/solana-labs/solana/v1.0.0/install/sa
         --data-dir ./safecoin-install \
         --config ./safecoin-install/config.yml
 
-export PATH="$PWD/safecoin-install/releases/$solana_version/solana-release/bin/:$PATH"
+PATH="$(realpath "$PWD"/safecoin-install/releases/"$solana_version"*/solana-release/bin/):$PATH"
+echo PATH="$PATH"
 
 set -x
 safecoin --version

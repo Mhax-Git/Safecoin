@@ -1,12 +1,12 @@
 //! The `bank_forks` module implements BankForks a DAG of checkpointed Banks
 
 use crate::{
-    accounts_background_service::{ABSRequestSender, SnapshotRequest},
+    accounts_background_service::{AbsRequestSender, SnapshotRequest},
     bank::Bank,
 };
 use log::*;
 use solana_metrics::inc_new_counter_info;
-use solana_sdk::{clock::Slot, timing};
+use solana_sdk::{clock::Slot, hash::Hash, timing};
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
     ops::Index,
@@ -106,6 +106,17 @@ impl BankForks {
         self.banks.get(&bank_slot)
     }
 
+    pub fn get_with_checked_hash(
+        &self,
+        (bank_slot, expected_hash): (Slot, Hash),
+    ) -> Option<&Arc<Bank>> {
+        let maybe_bank = self.banks.get(&bank_slot);
+        if let Some(bank) = maybe_bank {
+            assert_eq!(bank.hash(), expected_hash);
+        }
+        maybe_bank
+    }
+
     pub fn root_bank(&self) -> Arc<Bank> {
         self[self.root()].clone()
     }
@@ -187,7 +198,7 @@ impl BankForks {
     pub fn set_root(
         &mut self,
         root: Slot,
-        accounts_background_request_sender: &ABSRequestSender,
+        accounts_background_request_sender: &AbsRequestSender,
         highest_confirmed_root: Option<Slot>,
     ) {
         let old_epoch = self.root_bank().epoch();
@@ -327,7 +338,6 @@ mod tests {
         clock::UnixTimestamp,
         pubkey::Pubkey,
         signature::{Keypair, Signer},
-        stake_weighted_timestamp::DEPRECATED_TIMESTAMP_SLOT_RANGE,
         sysvar::epoch_schedule::EpochSchedule,
     };
     use solana_vote_program::vote_state::BlockTimestamp;
@@ -429,15 +439,14 @@ mod tests {
 
         let bank0 = Bank::new(&genesis_config);
         let mut bank_forks0 = BankForks::new(bank0);
-        bank_forks0.set_root(0, &ABSRequestSender::default(), None);
+        bank_forks0.set_root(0, &AbsRequestSender::default(), None);
 
         let bank1 = Bank::new(&genesis_config);
         let mut bank_forks1 = BankForks::new(bank1);
 
         let additional_timestamp_secs = 2;
 
-        let num_slots = slots_in_epoch + 1 // Advance past first epoch boundary
-            + DEPRECATED_TIMESTAMP_SLOT_RANGE as u64 + 1; // ... and past deprecated slot range
+        let num_slots = slots_in_epoch + 1; // Advance past first epoch boundary
         for slot in 1..num_slots {
             // Just after the epoch boundary, timestamp a vote that will shift
             // Clock::unix_timestamp from Bank::unix_timestamp_from_genesis()
@@ -462,7 +471,7 @@ mod tests {
 
             // Set root in bank_forks0 to truncate the ancestor history
             bank_forks0.insert(child1);
-            bank_forks0.set_root(slot, &ABSRequestSender::default(), None);
+            bank_forks0.set_root(slot, &AbsRequestSender::default(), None);
 
             // Don't set root in bank_forks1 to keep the ancestor history
             bank_forks1.insert(child2);
@@ -516,7 +525,7 @@ mod tests {
         );
         bank_forks.set_root(
             2,
-            &ABSRequestSender::default(),
+            &AbsRequestSender::default(),
             None, // highest confirmed root
         );
         banks[2].squash();
@@ -575,7 +584,7 @@ mod tests {
         );
         bank_forks.set_root(
             2,
-            &ABSRequestSender::default(),
+            &AbsRequestSender::default(),
             Some(1), // highest confirmed root
         );
         banks[2].squash();

@@ -1,4 +1,5 @@
 #![feature(test)]
+#![allow(clippy::integer_arithmetic)]
 
 extern crate test;
 
@@ -6,11 +7,12 @@ use dashmap::DashMap;
 use rand::Rng;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use solana_runtime::{
-    accounts::{create_test_accounts, Accounts},
+    accounts::{create_test_accounts, AccountAddressFilter, Accounts},
+    accounts_index::AccountSecondaryIndexes,
     bank::*,
 };
 use solana_sdk::{
-    account::Account,
+    account::AccountSharedData,
     genesis_config::{create_genesis_config, ClusterType},
     hash::Hash,
     pubkey::Pubkey,
@@ -26,7 +28,8 @@ use test::Bencher;
 fn deposit_many(bank: &Bank, pubkeys: &mut Vec<Pubkey>, num: usize) {
     for t in 0..num {
         let pubkey = solana_sdk::pubkey::new_rand();
-        let account = Account::new((t + 1) as u64, 0, &Account::default().owner);
+        let account =
+            AccountSharedData::new((t + 1) as u64, 0, &AccountSharedData::default().owner);
         pubkeys.push(pubkey);
         assert!(bank.get_account(&pubkey).is_none());
         bank.deposit(&pubkey, (t + 1) as u64);
@@ -51,7 +54,7 @@ fn test_accounts_create(bencher: &mut Bencher) {
         &[],
         None,
         None,
-        HashSet::new(),
+        AccountSecondaryIndexes::default(),
         false,
     );
     bencher.iter(|| {
@@ -70,7 +73,7 @@ fn test_accounts_squash(bencher: &mut Bencher) {
         &[],
         None,
         None,
-        HashSet::new(),
+        AccountSecondaryIndexes::default(),
         false,
     ));
     let mut pubkeys: Vec<Pubkey> = vec![];
@@ -95,7 +98,7 @@ fn test_accounts_hash_bank_hash(bencher: &mut Bencher) {
     let accounts = Accounts::new_with_config(
         vec![PathBuf::from("bench_accounts_hash_internal")],
         &ClusterType::Development,
-        HashSet::new(),
+        AccountSecondaryIndexes::default(),
         false,
     );
     let mut pubkeys: Vec<Pubkey> = vec![];
@@ -103,12 +106,8 @@ fn test_accounts_hash_bank_hash(bencher: &mut Bencher) {
     let slot = 0;
     create_test_accounts(&accounts, &mut pubkeys, num_accounts, slot);
     let ancestors = vec![(0, 0)].into_iter().collect();
-    let (_, total_lamports) = accounts
-        .accounts_db
-        .update_accounts_hash(0, &ancestors, true);
-    bencher.iter(|| {
-        assert!(accounts.verify_bank_hash_and_lamports(0, &ancestors, total_lamports, true))
-    });
+    let (_, total_lamports) = accounts.accounts_db.update_accounts_hash(0, &ancestors);
+    bencher.iter(|| assert!(accounts.verify_bank_hash_and_lamports(0, &ancestors, total_lamports)));
 }
 
 #[bench]
@@ -117,16 +116,14 @@ fn test_update_accounts_hash(bencher: &mut Bencher) {
     let accounts = Accounts::new_with_config(
         vec![PathBuf::from("update_accounts_hash")],
         &ClusterType::Development,
-        HashSet::new(),
+        AccountSecondaryIndexes::default(),
         false,
     );
     let mut pubkeys: Vec<Pubkey> = vec![];
     create_test_accounts(&accounts, &mut pubkeys, 50_000, 0);
     let ancestors = vec![(0, 0)].into_iter().collect();
     bencher.iter(|| {
-        accounts
-            .accounts_db
-            .update_accounts_hash(0, &ancestors, true);
+        accounts.accounts_db.update_accounts_hash(0, &ancestors);
     });
 }
 
@@ -136,7 +133,7 @@ fn test_accounts_delta_hash(bencher: &mut Bencher) {
     let accounts = Accounts::new_with_config(
         vec![PathBuf::from("accounts_delta_hash")],
         &ClusterType::Development,
-        HashSet::new(),
+        AccountSecondaryIndexes::default(),
         false,
     );
     let mut pubkeys: Vec<Pubkey> = vec![];
@@ -152,14 +149,15 @@ fn bench_delete_dependencies(bencher: &mut Bencher) {
     let accounts = Accounts::new_with_config(
         vec![PathBuf::from("accounts_delete_deps")],
         &ClusterType::Development,
-        HashSet::new(),
+        AccountSecondaryIndexes::default(),
         false,
     );
     let mut old_pubkey = Pubkey::default();
-    let zero_account = Account::new(0, 0, &Account::default().owner);
+    let zero_account = AccountSharedData::new(0, 0, &AccountSharedData::default().owner);
     for i in 0..1000 {
         let pubkey = solana_sdk::pubkey::new_rand();
-        let account = Account::new((i + 1) as u64, 0, &Account::default().owner);
+        let account =
+            AccountSharedData::new((i + 1) as u64, 0, &AccountSharedData::default().owner);
         accounts.store_slow_uncached(i, &pubkey, &account);
         accounts.store_slow_uncached(i, &old_pubkey, &zero_account);
         old_pubkey = pubkey;
@@ -184,7 +182,7 @@ fn store_accounts_with_possible_contention<F: 'static>(
                 .join(bench_name),
         ],
         &ClusterType::Development,
-        HashSet::new(),
+        AccountSecondaryIndexes::default(),
         false,
     ));
     let num_keys = 1000;
@@ -194,7 +192,7 @@ fn store_accounts_with_possible_contention<F: 'static>(
         (0..num_keys)
             .map(|_| {
                 let pubkey = solana_sdk::pubkey::new_rand();
-                let account = Account::new(1, 0, &Account::default().owner);
+                let account = AccountSharedData::new(1, 0, &AccountSharedData::default().owner);
                 accounts.store_slow_uncached(slot, &pubkey, &account);
                 pubkey
             })
@@ -214,7 +212,7 @@ fn store_accounts_with_possible_contention<F: 'static>(
 
     let num_new_keys = 1000;
     let new_accounts: Vec<_> = (0..num_new_keys)
-        .map(|_| Account::new(1, 0, &Account::default().owner))
+        .map(|_| AccountSharedData::new(1, 0, &AccountSharedData::default().owner))
         .collect();
     bencher.iter(|| {
         for account in &new_accounts {
@@ -246,7 +244,9 @@ fn bench_concurrent_read_write(bencher: &mut Bencher) {
 #[ignore]
 fn bench_concurrent_scan_write(bencher: &mut Bencher) {
     store_accounts_with_possible_contention("concurrent_scan_write", bencher, |accounts, _| loop {
-        test::black_box(accounts.load_by_program(&HashMap::new(), &Account::default().owner));
+        test::black_box(
+            accounts.load_by_program(&HashMap::new(), &AccountSharedData::default().owner),
+        );
     })
 }
 
@@ -300,14 +300,14 @@ fn bench_rwlock_hashmap_single_reader_with_n_writers(bencher: &mut Bencher) {
     })
 }
 
-fn setup_bench_dashmap_iter() -> (Arc<Accounts>, DashMap<Pubkey, (Account, Hash)>) {
+fn setup_bench_dashmap_iter() -> (Arc<Accounts>, DashMap<Pubkey, (AccountSharedData, Hash)>) {
     let accounts = Arc::new(Accounts::new_with_config(
         vec![
             PathBuf::from(std::env::var("FARF_DIR").unwrap_or_else(|_| "farf".to_string()))
                 .join("bench_dashmap_par_iter"),
         ],
         &ClusterType::Development,
-        HashSet::new(),
+        AccountSecondaryIndexes::default(),
         false,
     ));
 
@@ -319,7 +319,7 @@ fn setup_bench_dashmap_iter() -> (Arc<Accounts>, DashMap<Pubkey, (Account, Hash)
         dashmap.insert(
             Pubkey::new_unique(),
             (
-                Account::new(1, 0, &Account::default().owner),
+                AccountSharedData::new(1, 0, &AccountSharedData::default().owner),
                 Hash::new_unique(),
             ),
         );
@@ -353,5 +353,31 @@ fn bench_dashmap_iter(bencher: &mut Bencher) {
                 .map(|cached_account| (*cached_account.key(), cached_account.value().1))
                 .collect::<Vec<(Pubkey, Hash)>>(),
         );
+    });
+}
+
+#[bench]
+fn bench_load_largest_accounts(b: &mut Bencher) {
+    let accounts = Accounts::new_with_config(
+        Vec::new(),
+        &ClusterType::Development,
+        AccountSecondaryIndexes::default(),
+        false,
+    );
+    let mut rng = rand::thread_rng();
+    for _ in 0..10_000 {
+        let lamports = rng.gen();
+        let pubkey = Pubkey::new_unique();
+        let account = AccountSharedData::new(lamports, 0, &Pubkey::default());
+        accounts.store_slow_uncached(0, &pubkey, &account);
+    }
+    let ancestors = vec![(0, 0)].into_iter().collect();
+    b.iter(|| {
+        accounts.load_largest_accounts(
+            &ancestors,
+            20,
+            &HashSet::new(),
+            AccountAddressFilter::Exclude,
+        )
     });
 }

@@ -1,5 +1,9 @@
+#![allow(clippy::integer_arithmetic)]
 use {
-    solana_program::{
+    assert_matches::assert_matches,
+    bincode::deserialize,
+    solana_program_test::{processor, ProgramTest, ProgramTestError},
+    solana_sdk::{
         account_info::{next_account_info, AccountInfo},
         clock::Clock,
         entrypoint::ProgramResult,
@@ -7,17 +11,18 @@ use {
         program_error::ProgramError,
         pubkey::Pubkey,
         rent::Rent,
-        system_instruction, system_program,
-        sysvar::{clock, Sysvar},
-    },
-    solana_program_test::{processor, ProgramTest, ProgramTestError},
-    solana_sdk::{
         signature::{Keypair, Signer},
+        system_instruction, system_program,
+        sysvar::{
+            clock,
+            stake_history::{self, StakeHistory},
+            Sysvar,
+        },
         transaction::{Transaction, TransactionError},
     },
     solana_stake_program::{
         stake_instruction,
-        stake_state::{Authorized, Lockup},
+        stake_state::{Authorized, Lockup, StakeState},
     },
     solana_vote_program::{
         vote_instruction,
@@ -57,7 +62,7 @@ async fn clock_sysvar_updated_from_warp() {
 
     let mut context = program_test.start_with_context().await;
     let expected_slot = 5_000_000;
-    let instruction = Instruction::new(
+    let instruction = Instruction::new_with_bincode(
         program_id,
         &expected_slot,
         vec![AccountMeta::new_readonly(clock::id(), false)],
@@ -82,7 +87,7 @@ async fn clock_sysvar_updated_from_warp() {
 
     // Warp to success!
     context.warp_to_slot(expected_slot).unwrap();
-    let instruction = Instruction::new(
+    let instruction = Instruction::new_with_bincode(
         program_id,
         &expected_slot,
         vec![AccountMeta::new_readonly(clock::id(), false)],
@@ -163,6 +168,8 @@ async fn stake_rewards_from_warp() {
     let program_test = ProgramTest::default();
 
     let mut context = program_test.start_with_context().await;
+    // warp once to make sure stake config doesn't get rent-collected
+    context.warp_to_slot(100).unwrap();
     let mut instructions = vec![];
     let validator_keypair = Keypair::new();
     instructions.push(system_instruction::create_account(
@@ -247,4 +254,30 @@ async fn stake_rewards_from_warp() {
         .expect("account exists")
         .unwrap();
     assert!(account.lamports > stake_lamports);
+
+    // check that stake is fully active
+    let stake_history_account = context
+        .banks_client
+        .get_account(stake_history::id())
+        .await
+        .expect("account exists")
+        .unwrap();
+
+    let clock_account = context
+        .banks_client
+        .get_account(clock::id())
+        .await
+        .expect("account exists")
+        .unwrap();
+
+    let stake_state: StakeState = deserialize(&account.data).unwrap();
+    let stake_history: StakeHistory = deserialize(&stake_history_account.data).unwrap();
+    let clock: Clock = deserialize(&clock_account.data).unwrap();
+    let stake = stake_state.stake().unwrap();
+    assert_matches!(
+        stake
+            .delegation
+            .stake_activating_and_deactivating(clock.epoch, Some(&stake_history), true,),
+        (_, 0, 0)
+    );
 }

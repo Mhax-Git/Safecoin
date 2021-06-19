@@ -1,6 +1,11 @@
 use crate::{decode_error::DecodeError, hash::hashv};
+use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use num_derive::{FromPrimitive, ToPrimitive};
-use std::{convert::TryFrom, fmt, mem, str::FromStr};
+use std::{
+    convert::{Infallible, TryFrom},
+    fmt, mem,
+    str::FromStr,
+};
 use thiserror::Error;
 
 /// Number of bytes in a pubkey
@@ -37,7 +42,20 @@ impl From<u64> for PubkeyError {
 
 #[repr(transparent)]
 #[derive(
-    Serialize, Deserialize, Clone, Copy, Default, Eq, PartialEq, Ord, PartialOrd, Hash, AbiExample,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
+    BorshDeserialize,
+    BorshSchema,
+    Clone,
+    Copy,
+    Default,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    AbiExample,
 )]
 pub struct Pubkey([u8; 32]);
 
@@ -49,7 +67,16 @@ pub enum ParsePubkeyError {
     WrongSize,
     #[error("Invalid Base58 string")]
     Invalid,
+    #[error("Infallible")]
+    Infallible,
 }
+
+impl From<Infallible> for ParsePubkeyError {
+    fn from(_: Infallible) -> Self {
+        Self::Infallible
+    }
+}
+
 impl<T> DecodeError<T> for ParsePubkeyError {
     fn type_of() -> &'static str {
         "ParsePubkeyError"
@@ -72,6 +99,24 @@ impl FromStr for Pubkey {
             Ok(Pubkey::new(&pubkey_vec))
         }
     }
+}
+
+impl TryFrom<&str> for Pubkey {
+    type Error = ParsePubkeyError;
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        Pubkey::from_str(s)
+    }
+}
+
+pub fn bytes_are_curve_point<T: AsRef<[u8]>>(_bytes: T) -> bool {
+    #[cfg(not(target_arch = "bpf"))]
+    {
+        curve25519_dalek::edwards::CompressedEdwardsY::from_slice(_bytes.as_ref())
+            .decompress()
+            .is_some()
+    }
+    #[cfg(target_arch = "bpf")]
+    unimplemented!();
 }
 
 impl Pubkey {
@@ -165,10 +210,7 @@ impl Pubkey {
             hasher.hashv(&[program_id.as_ref(), "ProgramDerivedAddress".as_ref()]);
             let hash = hasher.result();
 
-            if curve25519_dalek::edwards::CompressedEdwardsY::from_slice(hash.as_ref())
-                .decompress()
-                .is_some()
-            {
+            if bytes_are_curve_point(hash) {
                 return Err(PubkeyError::InvalidSeeds);
             }
 
@@ -287,6 +329,10 @@ impl Pubkey {
 
     pub fn to_bytes(self) -> [u8; 32] {
         self.0
+    }
+
+    pub fn is_on_curve(&self) -> bool {
+        bytes_are_curve_point(self)
     }
 
     /// Log a `Pubkey` from a program

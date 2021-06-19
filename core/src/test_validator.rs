@@ -3,19 +3,21 @@ use {
         cluster_info::Node,
         gossip_service::discover_cluster,
         rpc::JsonRpcConfig,
-        validator::{Validator, ValidatorConfig},
+        validator::{Validator, ValidatorConfig, ValidatorExit, ValidatorStartProgress},
     },
     solana_client::rpc_client::RpcClient,
     solana_ledger::{blockstore::create_new_ledger, create_new_tmp_ledger},
+    solana_net_utils::PortRange,
     solana_runtime::{
         bank_forks::{ArchiveFormat, SnapshotConfig, SnapshotVersion},
         genesis_utils::create_genesis_config_with_leader_ex,
         hardened_unpack::MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
     },
     solana_sdk::{
-        account::Account,
+        account::{Account, AccountSharedData},
         clock::{Slot, DEFAULT_MS_PER_SLOT},
         commitment_config::CommitmentConfig,
+        epoch_schedule::EpochSchedule,
         fee_calculator::{FeeCalculator, FeeRateGovernor},
         hash::Hash,
         native_token::sol_to_lamports,
@@ -27,8 +29,8 @@ use {
         collections::HashMap,
         fs::remove_dir_all,
         net::{IpAddr, Ipv4Addr, SocketAddr},
-        path::PathBuf,
-        sync::Arc,
+        path::{Path, PathBuf},
+        sync::{Arc, RwLock},
         thread::sleep,
         time::Duration,
     },
@@ -41,6 +43,29 @@ pub struct ProgramInfo {
     pub program_path: PathBuf,
 }
 
+#[derive(Debug)]
+pub struct TestValidatorNodeConfig {
+    gossip_addr: SocketAddr,
+    port_range: PortRange,
+    bind_ip_addr: IpAddr,
+}
+
+impl Default for TestValidatorNodeConfig {
+    fn default() -> Self {
+        const MIN_PORT_RANGE: u16 = 1024;
+        const MAX_PORT_RANGE: u16 = 65535;
+
+        let bind_ip_addr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
+        let port_range = (MIN_PORT_RANGE, MAX_PORT_RANGE);
+
+        Self {
+            gossip_addr: socketaddr!("127.0.0.1:0"),
+            port_range,
+            bind_ip_addr,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct TestValidatorGenesis {
     fee_rate_governor: FeeRateGovernor,
@@ -49,8 +74,15 @@ pub struct TestValidatorGenesis {
     rpc_config: JsonRpcConfig,
     rpc_ports: Option<(u16, u16)>, // (JsonRpc, JsonRpcPubSub), None == random ports
     warp_slot: Option<Slot>,
-    accounts: HashMap<Pubkey, Account>,
+    no_bpf_jit: bool,
+    accounts: HashMap<Pubkey, AccountSharedData>,
     programs: Vec<ProgramInfo>,
+    epoch_schedule: Option<EpochSchedule>,
+    node_config: TestValidatorNodeConfig,
+    pub validator_exit: Arc<RwLock<ValidatorExit>>,
+    pub start_progress: Arc<RwLock<ValidatorStartProgress>>,
+    pub authorized_voter_keypairs: Arc<RwLock<Vec<Arc<Keypair>>>>,
+    pub max_ledger_shreds: Option<u64>,
 }
 
 impl TestValidatorGenesis {
@@ -59,8 +91,18 @@ impl TestValidatorGenesis {
         self
     }
 
+    /// Check if a given TestValidator ledger has already been initialized
+    pub fn ledger_exists(ledger_path: &Path) -> bool {
+        ledger_path.join("vote-account-keypair.json").exists()
+    }
+
     pub fn fee_rate_governor(&mut self, fee_rate_governor: FeeRateGovernor) -> &mut Self {
         self.fee_rate_governor = fee_rate_governor;
+        self
+    }
+
+    pub fn epoch_schedule(&mut self, epoch_schedule: EpochSchedule) -> &mut Self {
+        self.epoch_schedule = Some(epoch_schedule);
         self
     }
 
@@ -79,20 +121,50 @@ impl TestValidatorGenesis {
         self
     }
 
+    pub fn faucet_addr(&mut self, faucet_addr: Option<SocketAddr>) -> &mut Self {
+        self.rpc_config.faucet_addr = faucet_addr;
+        self
+    }
+
     pub fn warp_slot(&mut self, warp_slot: Slot) -> &mut Self {
         self.warp_slot = Some(warp_slot);
         self
     }
 
+    pub fn bpf_jit(&mut self, bpf_jit: bool) -> &mut Self {
+        self.no_bpf_jit = !bpf_jit;
+        self
+    }
+
+    pub fn gossip_host(&mut self, gossip_host: IpAddr) -> &mut Self {
+        self.node_config.gossip_addr.set_ip(gossip_host);
+        self
+    }
+
+    pub fn gossip_port(&mut self, gossip_port: u16) -> &mut Self {
+        self.node_config.gossip_addr.set_port(gossip_port);
+        self
+    }
+
+    pub fn port_range(&mut self, port_range: PortRange) -> &mut Self {
+        self.node_config.port_range = port_range;
+        self
+    }
+
+    pub fn bind_ip_addr(&mut self, bind_ip_addr: IpAddr) -> &mut Self {
+        self.node_config.bind_ip_addr = bind_ip_addr;
+        self
+    }
+
     /// Add an account to the test environment
-    pub fn add_account(&mut self, address: Pubkey, account: Account) -> &mut Self {
+    pub fn add_account(&mut self, address: Pubkey, account: AccountSharedData) -> &mut Self {
         self.accounts.insert(address, account);
         self
     }
 
     pub fn add_accounts<T>(&mut self, accounts: T) -> &mut Self
     where
-        T: IntoIterator<Item = (Pubkey, Account)>,
+        T: IntoIterator<Item = (Pubkey, AccountSharedData)>,
     {
         for (address, account) in accounts {
             self.add_account(address, account);
@@ -110,7 +182,7 @@ impl TestValidatorGenesis {
                 error!("Failed to fetch {}: {}", address, err);
                 crate::validator::abort();
             });
-            self.add_account(address, account);
+            self.add_account(address, AccountSharedData::from(account));
         }
         self
     }
@@ -125,7 +197,7 @@ impl TestValidatorGenesis {
     ) -> &mut Self {
         self.add_account(
             address,
-            Account {
+            AccountSharedData::from(Account {
                 lamports,
                 data: solana_program_test::read_file(
                     solana_program_test::find_file(filename).unwrap_or_else(|| {
@@ -135,7 +207,7 @@ impl TestValidatorGenesis {
                 owner,
                 executable: false,
                 rent_epoch: 0,
-            },
+            }),
         )
     }
 
@@ -150,14 +222,14 @@ impl TestValidatorGenesis {
     ) -> &mut Self {
         self.add_account(
             address,
-            Account {
+            AccountSharedData::from(Account {
                 lamports,
                 data: base64::decode(data_base64)
                     .unwrap_or_else(|err| panic!("Failed to base64 decode: {}", err)),
                 owner,
                 executable: false,
                 rent_epoch: 0,
-            },
+            }),
         )
     }
 
@@ -223,9 +295,10 @@ pub struct TestValidator {
 
 impl TestValidator {
     /// Create and start a `TestValidator` with no transaction fees and minimal rent.
+    /// Faucet optional.
     ///
     /// This function panics on initialization failure.
-    pub fn with_no_fees(mint_address: Pubkey) -> Self {
+    pub fn with_no_fees(mint_address: Pubkey, faucet_addr: Option<SocketAddr>) -> Self {
         TestValidatorGenesis::default()
             .fee_rate_governor(FeeRateGovernor::new(0, 0))
             .rent(Rent {
@@ -233,14 +306,20 @@ impl TestValidator {
                 exemption_threshold: 1.0,
                 ..Rent::default()
             })
+            .faucet_addr(faucet_addr)
             .start_with_mint_address(mint_address)
             .expect("validator start failed")
     }
 
     /// Create and start a `TestValidator` with custom transaction fees and minimal rent.
+    /// Faucet optional.
     ///
     /// This function panics on initialization failure.
-    pub fn with_custom_fees(mint_address: Pubkey, target_lamports_per_signature: u64) -> Self {
+    pub fn with_custom_fees(
+        mint_address: Pubkey,
+        target_lamports_per_signature: u64,
+        faucet_addr: Option<SocketAddr>,
+    ) -> Self {
         TestValidatorGenesis::default()
             .fee_rate_governor(FeeRateGovernor::new(target_lamports_per_signature, 0))
             .rent(Rent {
@@ -248,6 +327,7 @@ impl TestValidator {
                 exemption_threshold: 1.0,
                 ..Rent::default()
             })
+            .faucet_addr(faucet_addr)
             .start_with_mint_address(mint_address)
             .expect("validator start failed")
     }
@@ -265,9 +345,9 @@ impl TestValidator {
         let validator_identity = Keypair::new();
         let validator_vote_account = Keypair::new();
         let validator_stake_account = Keypair::new();
-        let validator_identity_lamports = sol_to_lamports(33_406_471.);
-        let validator_stake_lamports = sol_to_lamports(10_000.);
-        let mint_lamports = sol_to_lamports(500.);
+        let validator_identity_lamports = sol_to_lamports(500.);
+        let validator_stake_lamports = sol_to_lamports(1_000_000.);
+        let mint_lamports = sol_to_lamports(500_000_000.);
 
         let mut accounts = config.accounts.clone();
         for (address, account) in solana_program_test::programs::spl_programs(&config.rent) {
@@ -277,13 +357,13 @@ impl TestValidator {
             let data = solana_program_test::read_file(&program.program_path);
             accounts.insert(
                 program.program_id,
-                Account {
+                AccountSharedData::from(Account {
                     lamports: Rent::default().minimum_balance(data.len()).min(1),
                     data,
                     owner: program.loader,
                     executable: true,
                     rent_epoch: 0,
-                },
+                }),
             );
         }
 
@@ -297,15 +377,17 @@ impl TestValidator {
             validator_identity_lamports,
             config.fee_rate_governor.clone(),
             config.rent,
-            solana_sdk::genesis_config::ClusterType::MainnetBeta,
+            solana_sdk::genesis_config::ClusterType::Development,
             accounts.into_iter().collect(),
         );
-        genesis_config.epoch_schedule = solana_sdk::epoch_schedule::EpochSchedule::without_warmup();
+        genesis_config.epoch_schedule = config
+            .epoch_schedule
+            .unwrap_or_else(EpochSchedule::without_warmup);
 
         let ledger_path = match &config.ledger_path {
             None => create_new_tmp_ledger!(&genesis_config).0,
             Some(ledger_path) => {
-                if ledger_path.join("validator-keypair.json").exists() {
+                if TestValidatorGenesis::ledger_exists(ledger_path) {
                     return Ok(ledger_path.to_path_buf());
                 }
 
@@ -330,6 +412,10 @@ impl TestValidator {
             &validator_identity,
             ledger_path.join("validator-keypair.json").to_str().unwrap(),
         )?;
+
+        // `ledger_exists` should fail until the vote account keypair is written
+        assert!(!TestValidatorGenesis::ledger_exists(&ledger_path));
+
         write_keypair_file(
             &validator_vote_account,
             ledger_path
@@ -358,7 +444,12 @@ impl TestValidator {
                 .unwrap(),
         )?;
 
-        let mut node = Node::new_localhost_with_pubkey(&validator_identity.pubkey());
+        let mut node = Node::new_single_bind(
+            &validator_identity.pubkey(),
+            &config.node_config.gossip_addr,
+            config.node_config.port_range,
+            config.node_config.bind_ip_addr,
+        );
         if let Some((rpc, rpc_pubsub)) = config.rpc_ports {
             node.info.rpc = SocketAddr::new(node.info.gossip.ip(), rpc);
             node.info.rpc_pubsub = SocketAddr::new(node.info.gossip.ip(), rpc_pubsub);
@@ -373,6 +464,16 @@ impl TestValidator {
         let mut rpc_config = config.rpc_config.clone();
         rpc_config.identity_pubkey = validator_identity.pubkey();
 
+        {
+            let mut authorized_voter_keypairs = config.authorized_voter_keypairs.write().unwrap();
+            if !authorized_voter_keypairs
+                .iter()
+                .any(|x| x.pubkey() == vote_account_address)
+            {
+                authorized_voter_keypairs.push(Arc::new(validator_vote_account))
+            }
+        }
+
         let validator_config = ValidatorConfig {
             rpc_addrs: Some((
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), node.info.rpc.port()),
@@ -384,7 +485,7 @@ impl TestValidator {
             rpc_config,
             accounts_hash_interval_slots: 100,
             account_paths: vec![ledger_path.join("accounts")],
-            poh_verify: true, // Skip PoH verification of ledger on startup for speed
+            poh_verify: false, // Skip PoH verification of ledger on startup for speed
             snapshot_config: Some(SnapshotConfig {
                 snapshot_interval_slots: 100,
                 snapshot_path: ledger_path.join("snapshot"),
@@ -394,6 +495,11 @@ impl TestValidator {
             }),
             enforce_ulimit_nofile: false,
             warp_slot: config.warp_slot,
+            bpf_jit: !config.no_bpf_jit,
+            validator_exit: config.validator_exit.clone(),
+            rocksdb_compaction_interval: Some(100), // Compact every 100 slots
+            max_ledger_shreds: config.max_ledger_shreds,
+            no_wait_for_vote_to_start_leader: true,
             ..ValidatorConfig::default()
         };
 
@@ -401,16 +507,18 @@ impl TestValidator {
             node,
             &Arc::new(validator_identity),
             &ledger_path,
-            &validator_vote_account.pubkey(),
-            vec![Arc::new(validator_vote_account)],
+            &vote_account_address,
+            config.authorized_voter_keypairs.clone(),
             vec![],
             &validator_config,
             true, // should_check_duplicate_instance
+            config.start_progress.clone(),
         ));
 
         // Needed to avoid panics in `solana-responder-gossip` in tests that create a number of
         // test validators concurrently...
-        discover_cluster(&gossip, 1).expect("TestValidator startup failed");
+        discover_cluster(&gossip, 1)
+            .map_err(|err| format!("TestValidator startup failed: {:?}", err))?;
 
         // This is a hack to delay until the fees are non-zero for test consistency
         // (fees from genesis are zero until the first block with a transaction in it is completed
@@ -418,19 +526,24 @@ impl TestValidator {
         {
             let rpc_client =
                 RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::processed());
-            let fee_rate_governor = rpc_client
-                .get_fee_rate_governor()
-                .expect("get_fee_rate_governor")
-                .value;
-            if fee_rate_governor.target_lamports_per_signature > 0 {
-                while rpc_client
-                    .get_recent_blockhash()
-                    .expect("get_recent_blockhash")
-                    .1
-                    .lamports_per_signature
-                    == 0
-                {
-                    sleep(Duration::from_millis(DEFAULT_MS_PER_SLOT));
+
+            if let Ok(result) = rpc_client.get_fee_rate_governor() {
+                let fee_rate_governor = result.value;
+                if fee_rate_governor.target_lamports_per_signature > 0 {
+                    loop {
+                        match rpc_client.get_recent_blockhash() {
+                            Ok((_blockhash, fee_calculator)) => {
+                                if fee_calculator.lamports_per_signature != 0 {
+                                    break;
+                                }
+                            }
+                            Err(err) => {
+                                warn!("get_recent_blockhash() failed: {:?}", err);
+                                break;
+                            }
+                        }
+                        sleep(Duration::from_millis(DEFAULT_MS_PER_SLOT));
+                    }
                 }
             }
         }
@@ -440,8 +553,8 @@ impl TestValidator {
             preserve_ledger,
             rpc_pubsub_url,
             rpc_url,
-            gossip,
             tpu,
+            gossip,
             validator,
             vote_account_address,
         })
@@ -482,6 +595,12 @@ impl TestValidator {
             .expect("get_recent_blockhash");
 
         (rpc_client, recent_blockhash, fee_calculator)
+    }
+
+    pub fn join(mut self) {
+        if let Some(validator) = self.validator.take() {
+            validator.join();
+        }
     }
 }
 

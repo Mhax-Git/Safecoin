@@ -19,8 +19,9 @@ use solana_vote_program::vote_state::{VoteAuthorize, VoteState, VoteStateVersion
 #[test]
 fn test_vote_authorize_and_withdraw() {
     let mint_keypair = Keypair::new();
-    let test_validator = TestValidator::with_no_fees(mint_keypair.pubkey());
+    let mint_pubkey = mint_keypair.pubkey();
     let faucet_addr = run_local_faucet(mint_keypair, None);
+    let test_validator = TestValidator::with_no_fees(mint_pubkey, Some(faucet_addr));
 
     let rpc_client =
         RpcClient::new_with_commitment(test_validator.rpc_url(), CommitmentConfig::processed());
@@ -30,14 +31,8 @@ fn test_vote_authorize_and_withdraw() {
     config.json_rpc_url = test_validator.rpc_url();
     config.signers = vec![&default_signer];
 
-    request_and_confirm_airdrop(
-        &rpc_client,
-        &faucet_addr,
-        &config.signers[0].pubkey(),
-        100_000,
-        &config,
-    )
-    .unwrap();
+    request_and_confirm_airdrop(&rpc_client, &config, &config.signers[0].pubkey(), 100_000)
+        .unwrap();
 
     // Create vote account
     let vote_account_keypair = Keypair::new();
@@ -50,6 +45,7 @@ fn test_vote_authorize_and_withdraw() {
         authorized_voter: None,
         authorized_withdrawer: Some(config.signers[0].pubkey()),
         commission: 0,
+        memo: None,
     };
     process_command(&config).unwrap();
     let vote_account = rpc_client
@@ -71,11 +67,16 @@ fn test_vote_authorize_and_withdraw() {
         to: vote_account_pubkey,
         from: 0,
         sign_only: false,
+        dump_transaction_message: false,
+        allow_unfunded_recipient: true,
         no_wait: false,
         blockhash_query: BlockhashQuery::All(blockhash_query::Source::Cluster),
         nonce_account: None,
         nonce_authority: 0,
+        memo: None,
         fee_payer: 0,
+        derived_address_seed: None,
+        derived_address_program_id: None,
     };
     process_command(&config).unwrap();
     let expected_balance = expected_balance + 1_000;
@@ -88,6 +89,7 @@ fn test_vote_authorize_and_withdraw() {
         vote_account_pubkey,
         new_authorized_pubkey: withdraw_authority.pubkey(),
         vote_authorize: VoteAuthorize::Withdrawer,
+        memo: None,
     };
     process_command(&config).unwrap();
     let vote_account = rpc_client
@@ -105,6 +107,7 @@ fn test_vote_authorize_and_withdraw() {
         withdraw_authority: 1,
         withdraw_amount: SpendAmount::Some(100),
         destination_account_pubkey: destination_account,
+        memo: None,
     };
     process_command(&config).unwrap();
     check_recent_balance(expected_balance - 100, &rpc_client, &vote_account_pubkey);
@@ -117,6 +120,7 @@ fn test_vote_authorize_and_withdraw() {
         vote_account_pubkey,
         new_identity_account: 2,
         withdraw_authority: 1,
+        memo: None,
     };
     process_command(&config).unwrap();
 }

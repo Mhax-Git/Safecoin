@@ -1,19 +1,13 @@
-pub use solana_core::test_validator;
+#![allow(clippy::integer_arithmetic)]
+pub use solana_core::{cluster_info::MINIMUM_VALIDATOR_PORT_RANGE_WIDTH, test_validator};
 use {
+    console::style,
+    indicatif::{ProgressDrawTarget, ProgressStyle},
     log::*,
-    serde_derive::{Deserialize, Serialize},
-    std::{
-        env,
-        fs::{self, File},
-        io::{self, Write},
-        net::SocketAddr,
-        path::Path,
-        process::exit,
-        thread::JoinHandle,
-        time::{Duration, SystemTime},
-    },
+    std::{env, process::exit, thread::JoinHandle},
 };
 
+pub mod admin_rpc_service;
 pub mod dashboard;
 
 #[cfg(unix)]
@@ -71,14 +65,7 @@ pub fn redirect_stderr_to_file(logfile: Option<String>) -> Option<JoinHandle<()>
         }
     };
 
-    solana_logger::setup_with_default(
-        &[
-            "solana=info,solana_runtime::message_processor=error", /* info logging for all safecoin modules */
-            "rpc=trace",   /* json_rpc request/response logging */
-        ]
-        .join(","),
-    );
-
+    solana_logger::setup_with_default("solana=info");
     logger_thread
 }
 
@@ -88,48 +75,60 @@ pub fn port_validator(port: String) -> Result<(), String> {
         .map_err(|e| format!("{:?}", e))
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-struct ProcessInfo {
-    rpc_addr: Option<SocketAddr>, // RPC port to contact the validator at
-    start_time: u64,              // Seconds since the UNIX_EPOCH for when the validator was started
+pub fn port_range_validator(port_range: String) -> Result<(), String> {
+    if let Some((start, end)) = solana_net_utils::parse_port_range(&port_range) {
+        if end - start < MINIMUM_VALIDATOR_PORT_RANGE_WIDTH {
+            Err(format!(
+                "Port range is too small.  Try --dynamic-port-range {}-{}",
+                start,
+                start + MINIMUM_VALIDATOR_PORT_RANGE_WIDTH
+            ))
+        } else {
+            Ok(())
+        }
+    } else {
+        Err("Invalid port range".to_string())
+    }
 }
 
-pub fn record_start(ledger_path: &Path, rpc_addr: Option<&SocketAddr>) -> Result<(), io::Error> {
-    if !ledger_path.exists() {
-        fs::create_dir_all(&ledger_path)?;
+/// Pretty print a "name value"
+pub fn println_name_value(name: &str, value: &str) {
+    println!("{} {}", style(name).bold(), value);
+}
+
+/// Creates a new process bar for processing that will take an unknown amount of time
+pub fn new_spinner_progress_bar() -> ProgressBar {
+    let progress_bar = indicatif::ProgressBar::new(42);
+    progress_bar.set_draw_target(ProgressDrawTarget::stdout());
+    progress_bar
+        .set_style(ProgressStyle::default_spinner().template("{spinner:.green} {wide_msg}"));
+    progress_bar.enable_steady_tick(100);
+
+    ProgressBar {
+        progress_bar,
+        is_term: console::Term::stdout().is_term(),
+    }
+}
+
+pub struct ProgressBar {
+    progress_bar: indicatif::ProgressBar,
+    is_term: bool,
+}
+
+impl ProgressBar {
+    pub fn set_message(&self, msg: &str) {
+        if self.is_term {
+            self.progress_bar.set_message(msg);
+        } else {
+            println!("{}", msg);
+        }
     }
 
-    let start_info = ProcessInfo {
-        rpc_addr: rpc_addr.cloned(),
-        start_time: SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-    };
-
-    let serialized = serde_yaml::to_string(&start_info)
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("{:?}", err)))?;
-
-    let mut file = File::create(ledger_path.join("process-info.yml"))?;
-    file.write_all(&serialized.into_bytes())?;
-    Ok(())
-}
-
-fn get_validator_process_info(
-    ledger_path: &Path,
-) -> Result<(Option<SocketAddr>, SystemTime), io::Error> {
-    let file = File::open(ledger_path.join("process-info.yml"))?;
-    let config: ProcessInfo = serde_yaml::from_reader(file)
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("{:?}", err)))?;
-
-    let start_time = SystemTime::UNIX_EPOCH + Duration::from_secs(config.start_time);
-    Ok((config.rpc_addr, start_time))
-}
-
-pub fn get_validator_rpc_addr(ledger_path: &Path) -> Result<Option<SocketAddr>, io::Error> {
-    get_validator_process_info(ledger_path).map(|process_info| process_info.0)
-}
-
-pub fn get_validator_start_time(ledger_path: &Path) -> Result<SystemTime, io::Error> {
-    get_validator_process_info(ledger_path).map(|process_info| process_info.1)
+    pub fn abandon_with_message(&self, msg: &str) {
+        if self.is_term {
+            self.progress_bar.abandon_with_message(msg);
+        } else {
+            println!("{}", msg);
+        }
+    }
 }

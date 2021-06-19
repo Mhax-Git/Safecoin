@@ -7,12 +7,15 @@ use serde_json::{json, Value};
 use solana_account_decoder::UiAccount;
 use solana_client::{
     rpc_client::RpcClient,
-    rpc_response::{Response, RpcSignatureResult},
+    rpc_config::{RpcAccountInfoConfig, RpcSignatureSubscribeConfig},
+    rpc_response::{Response, RpcSignatureResult, SlotUpdate},
+    tpu_client::{TpuClient, TpuClientConfig},
 };
 use solana_core::{rpc_pubsub::gen_client::Client as PubsubClient, test_validator::TestValidator};
 use solana_sdk::{
     commitment_config::CommitmentConfig,
     hash::Hash,
+    pubkey::Pubkey,
     signature::{Keypair, Signer},
     system_transaction,
     transaction::Transaction,
@@ -20,7 +23,7 @@ use solana_sdk::{
 use std::{
     collections::HashSet,
     net::UdpSocket,
-    sync::mpsc::channel,
+    sync::{mpsc::channel, Arc},
     thread::sleep,
     time::{Duration, Instant},
 };
@@ -53,7 +56,7 @@ fn test_rpc_send_tx() {
     solana_logger::setup();
 
     let alice = Keypair::new();
-    let test_validator = TestValidator::with_no_fees(alice.pubkey());
+    let test_validator = TestValidator::with_no_fees(alice.pubkey(), None);
     let rpc_url = test_validator.rpc_url();
 
     let bob_pubkey = solana_sdk::pubkey::new_rand();
@@ -113,7 +116,7 @@ fn test_rpc_invalid_requests() {
     solana_logger::setup();
 
     let alice = Keypair::new();
-    let test_validator = TestValidator::with_no_fees(alice.pubkey());
+    let test_validator = TestValidator::with_no_fees(alice.pubkey(), None);
     let rpc_url = test_validator.rpc_url();
 
     let bob_pubkey = solana_sdk::pubkey::new_rand();
@@ -141,11 +144,75 @@ fn test_rpc_invalid_requests() {
 }
 
 #[test]
+fn test_rpc_slot_updates() {
+    solana_logger::setup();
+
+    let test_validator = TestValidator::with_no_fees(Pubkey::new_unique(), None);
+
+    // Create the pub sub runtime
+    let rt = Runtime::new().unwrap();
+    let rpc_pubsub_url = test_validator.rpc_pubsub_url();
+    let (update_sender, update_receiver) = channel::<Arc<SlotUpdate>>();
+
+    // Subscribe to slot updates
+    rt.spawn(async move {
+        let connect = ws::try_connect::<PubsubClient>(&rpc_pubsub_url).unwrap();
+        let client = connect.await.unwrap();
+
+        tokio_02::spawn(async move {
+            let mut update_sub = client.slots_updates_subscribe().unwrap();
+            loop {
+                let response = update_sub.next().await.unwrap();
+                update_sender.send(response.unwrap()).unwrap();
+            }
+        });
+    });
+
+    let first_update = update_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+
+    // Verify that updates are received in order for an upcoming slot
+    let verify_slot = first_update.slot() + 2;
+    let mut expected_update_index = 0;
+    let expected_updates = vec![
+        "CreatedBank",
+        "Completed",
+        "Frozen",
+        "OptimisticConfirmation",
+        "Root",
+    ];
+
+    let test_start = Instant::now();
+    loop {
+        assert!(test_start.elapsed() < Duration::from_secs(30));
+        let update = update_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        if update.slot() == verify_slot {
+            let update_name = match *update {
+                SlotUpdate::CreatedBank { .. } => "CreatedBank",
+                SlotUpdate::Completed { .. } => "Completed",
+                SlotUpdate::Frozen { .. } => "Frozen",
+                SlotUpdate::OptimisticConfirmation { .. } => "OptimisticConfirmation",
+                SlotUpdate::Root { .. } => "Root",
+                _ => continue,
+            };
+            assert_eq!(update_name, expected_updates[expected_update_index]);
+            expected_update_index += 1;
+            if expected_update_index == expected_updates.len() {
+                break;
+            }
+        }
+    }
+}
+
+#[test]
 fn test_rpc_subscriptions() {
     solana_logger::setup();
 
     let alice = Keypair::new();
-    let test_validator = TestValidator::with_no_fees(alice.pubkey());
+    let test_validator = TestValidator::with_no_fees(alice.pubkey(), None);
 
     let transactions_socket = UdpSocket::bind("0.0.0.0:0").unwrap();
     transactions_socket.connect(test_validator.tpu()).unwrap();
@@ -192,7 +259,13 @@ fn test_rpc_subscriptions() {
         for sig in signature_set_clone {
             let status_sender = status_sender.clone();
             let mut sig_sub = client
-                .signature_subscribe(sig.clone(), None)
+                .signature_subscribe(
+                    sig.clone(),
+                    Some(RpcSignatureSubscribeConfig {
+                        commitment: Some(CommitmentConfig::confirmed()),
+                        ..RpcSignatureSubscribeConfig::default()
+                    }),
+                )
                 .unwrap_or_else(|err| panic!("sig sub err: {:#?}", err));
 
             tokio_02::spawn(async move {
@@ -207,7 +280,13 @@ fn test_rpc_subscriptions() {
         for pubkey in account_set {
             let account_sender = account_sender.clone();
             let mut client_sub = client
-                .account_subscribe(pubkey, None)
+                .account_subscribe(
+                    pubkey,
+                    Some(RpcAccountInfoConfig {
+                        commitment: Some(CommitmentConfig::confirmed()),
+                        ..RpcAccountInfoConfig::default()
+                    }),
+                )
                 .unwrap_or_else(|err| panic!("acct sub err: {:#?}", err));
             tokio_02::spawn(async move {
                 let response = client_sub.next().await.unwrap();
@@ -292,6 +371,40 @@ fn test_rpc_subscriptions() {
                     transactions.len()
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn test_tpu_send_transaction() {
+    let mint_keypair = Keypair::new();
+    let mint_pubkey = mint_keypair.pubkey();
+    let test_validator = TestValidator::with_no_fees(mint_pubkey, None);
+    let rpc_client = Arc::new(RpcClient::new_with_commitment(
+        test_validator.rpc_url(),
+        CommitmentConfig::processed(),
+    ));
+
+    let tpu_client = TpuClient::new(
+        rpc_client.clone(),
+        &test_validator.rpc_pubsub_url(),
+        TpuClientConfig::default(),
+    )
+    .unwrap();
+
+    let recent_blockhash = rpc_client.get_recent_blockhash().unwrap().0;
+    let tx =
+        system_transaction::transfer(&mint_keypair, &Pubkey::new_unique(), 42, recent_blockhash);
+    assert!(tpu_client.send_transaction(&tx));
+
+    let timeout = Duration::from_secs(5);
+    let now = Instant::now();
+    let signatures = vec![tx.signatures[0]];
+    loop {
+        assert!(now.elapsed() < timeout);
+        let statuses = rpc_client.get_signature_statuses(&signatures).unwrap();
+        if statuses.value.get(0).is_some() {
+            return;
         }
     }
 }

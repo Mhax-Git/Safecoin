@@ -12,7 +12,7 @@ use crossbeam_channel::{Receiver, SendError, Sender};
 use log::*;
 use rand::{thread_rng, Rng};
 use solana_measure::measure::Measure;
-use solana_sdk::clock::Slot;
+use solana_sdk::{clock::Slot, hash::Hash};
 use std::{
     boxed::Box,
     fmt::{Debug, Formatter},
@@ -21,7 +21,7 @@ use std::{
         Arc, RwLock,
     },
     thread::{self, sleep, Builder, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const INTERVAL_MS: u64 = 100;
@@ -29,6 +29,13 @@ const SHRUNKEN_ACCOUNT_PER_SEC: usize = 250;
 const SHRUNKEN_ACCOUNT_PER_INTERVAL: usize =
     SHRUNKEN_ACCOUNT_PER_SEC / (1000 / INTERVAL_MS as usize);
 const CLEAN_INTERVAL_BLOCKS: u64 = 100;
+
+// This value is chosen to spread the dropping cost over 3 expiration checks
+// RecycleStores are fully populated almost all of its lifetime. So, otherwise
+// this would drop MAX_RECYCLE_STORES mmaps at once in the worst case...
+// (Anyway, the dropping part is outside the AccountsDb::recycle_stores lock
+// and dropped in this AccountsBackgroundServe, so this shouldn't matter much)
+const RECYCLE_STORE_EXPIRATION_INTERVAL_SECS: u64 = crate::accounts_db::EXPIRATION_TTL_SECONDS / 3;
 
 pub type SnapshotRequestSender = Sender<SnapshotRequest>;
 pub type SnapshotRequestReceiver = Receiver<SnapshotRequest>;
@@ -81,6 +88,7 @@ impl SnapshotRequestHandler {
         &self,
         accounts_db_caching_enabled: bool,
         test_hash_calculation: bool,
+        use_index_hash_calculation: bool,
     ) -> Option<u64> {
         self.snapshot_request_receiver
             .try_iter()
@@ -90,6 +98,14 @@ impl SnapshotRequestHandler {
                     snapshot_root_bank,
                     status_cache_slot_deltas,
                 } = snapshot_request;
+
+                let previous_hash = if test_hash_calculation {
+                    // We have to use the index version here.
+                    // We cannot calculate the non-index way because cache has not been flushed and stores don't match reality.
+                    snapshot_root_bank.update_accounts_hash_with_index_option(true, false)
+                } else {
+                    Hash::default()
+                };
 
                 let mut shrink_time = Measure::start("shrink_time");
                 if !accounts_db_caching_enabled {
@@ -121,12 +137,16 @@ impl SnapshotRequestHandler {
                 flush_accounts_cache_time.stop();
 
                 let mut hash_time = Measure::start("hash_time");
-                let mut hash_for_testing = None;
-                snapshot_root_bank
-                    .update_accounts_hash_with_index_option(true, test_hash_calculation);
-                if test_hash_calculation {
-                    hash_for_testing = Some(snapshot_root_bank.get_accounts_hash());
-                }
+                let this_hash = snapshot_root_bank.update_accounts_hash_with_index_option(
+                    use_index_hash_calculation,
+                    test_hash_calculation,
+                );
+                let hash_for_testing = if test_hash_calculation {
+                    assert_eq!(previous_hash, this_hash);
+                    Some(snapshot_root_bank.get_accounts_hash())
+                } else {
+                    None
+                };
                 hash_time.stop();
 
                 let mut clean_time = Measure::start("clean_time");
@@ -192,13 +212,13 @@ impl SnapshotRequestHandler {
 }
 
 #[derive(Default)]
-pub struct ABSRequestSender {
+pub struct AbsRequestSender {
     snapshot_request_sender: Option<SnapshotRequestSender>,
 }
 
-impl ABSRequestSender {
+impl AbsRequestSender {
     pub fn new(snapshot_request_sender: Option<SnapshotRequestSender>) -> Self {
-        ABSRequestSender {
+        AbsRequestSender {
             snapshot_request_sender,
         }
     }
@@ -219,23 +239,27 @@ impl ABSRequestSender {
     }
 }
 
-pub struct ABSRequestHandler {
+pub struct AbsRequestHandler {
     pub snapshot_request_handler: Option<SnapshotRequestHandler>,
     pub pruned_banks_receiver: DroppedSlotsReceiver,
 }
 
-impl ABSRequestHandler {
+impl AbsRequestHandler {
     // Returns the latest requested snapshot block height, if one exists
     pub fn handle_snapshot_requests(
         &self,
         accounts_db_caching_enabled: bool,
         test_hash_calculation: bool,
+        use_index_hash_calculation: bool,
     ) -> Option<u64> {
         self.snapshot_request_handler
             .as_ref()
             .and_then(|snapshot_request_handler| {
-                snapshot_request_handler
-                    .handle_snapshot_requests(accounts_db_caching_enabled, test_hash_calculation)
+                snapshot_request_handler.handle_snapshot_requests(
+                    accounts_db_caching_enabled,
+                    test_hash_calculation,
+                    use_index_hash_calculation,
+                )
             })
     }
 
@@ -258,9 +282,10 @@ impl AccountsBackgroundService {
     pub fn new(
         bank_forks: Arc<RwLock<BankForks>>,
         exit: &Arc<AtomicBool>,
-        request_handler: ABSRequestHandler,
+        request_handler: AbsRequestHandler,
         accounts_db_caching_enabled: bool,
         test_hash_calculation: bool,
+        use_index_hash_calculation: bool,
     ) -> Self {
         info!("AccountsBackgroundService active");
         let exit = exit.clone();
@@ -268,6 +293,7 @@ impl AccountsBackgroundService {
         let mut last_cleaned_block_height = 0;
         let mut removed_slots_count = 0;
         let mut total_remove_slots_time = 0;
+        let mut last_expiration_check_time = Instant::now();
         let t_background = Builder::new()
             .name("solana-accounts-background".to_string())
             .spawn(move || loop {
@@ -286,6 +312,8 @@ impl AccountsBackgroundService {
                     &mut total_remove_slots_time,
                 );
 
+                Self::expire_old_recycle_stores(&bank, &mut last_expiration_check_time);
+
                 // Check to see if there were any requests for snapshotting banks
                 // < the current root bank `bank` above.
 
@@ -303,8 +331,11 @@ impl AccountsBackgroundService {
                 // request for `N` to the snapshot request channel before setting a root `R > N`, and
                 // snapshot_request_handler.handle_requests() will always look for the latest
                 // available snapshot in the channel.
-                let snapshot_block_height = request_handler
-                    .handle_snapshot_requests(accounts_db_caching_enabled, test_hash_calculation);
+                let snapshot_block_height = request_handler.handle_snapshot_requests(
+                    accounts_db_caching_enabled,
+                    test_hash_calculation,
+                    use_index_hash_calculation,
+                );
                 if accounts_db_caching_enabled {
                     // Note that the flush will do an internal clean of the
                     // cache up to bank.slot(), so should be safe as long
@@ -323,7 +354,7 @@ impl AccountsBackgroundService {
                     } else {
                         // under sustained writes, shrink can lag behind so cap to
                         // SHRUNKEN_ACCOUNT_PER_INTERVAL (which is based on INTERVAL_MS,
-                        // which in turn roughly asscociated block time)
+                        // which in turn roughly associated block time)
                         consumed_budget = bank
                             .process_stale_slot_with_budget(
                                 consumed_budget,
@@ -357,7 +388,7 @@ impl AccountsBackgroundService {
 
     fn remove_dead_slots(
         bank: &Bank,
-        request_handler: &ABSRequestHandler,
+        request_handler: &AbsRequestHandler,
         removed_slots_count: &mut usize,
         total_remove_slots_time: &mut u64,
     ) {
@@ -376,6 +407,16 @@ impl AccountsBackgroundService {
             *removed_slots_count = 0;
         }
     }
+
+    fn expire_old_recycle_stores(bank: &Bank, last_expiration_check_time: &mut Instant) {
+        let now = Instant::now();
+        if now.duration_since(*last_expiration_check_time).as_secs()
+            > RECYCLE_STORE_EXPIRATION_INTERVAL_SECS
+        {
+            bank.expire_old_recycle_stores();
+            *last_expiration_check_time = now;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -383,21 +424,24 @@ mod test {
     use super::*;
     use crate::genesis_utils::create_genesis_config;
     use crossbeam_channel::unbounded;
-    use solana_sdk::{account::Account, pubkey::Pubkey};
+    use solana_sdk::{account::AccountSharedData, pubkey::Pubkey};
 
     #[test]
     fn test_accounts_background_service_remove_dead_slots() {
         let genesis = create_genesis_config(10);
         let bank0 = Arc::new(Bank::new(&genesis.genesis_config));
         let (pruned_banks_sender, pruned_banks_receiver) = unbounded();
-        let request_handler = ABSRequestHandler {
+        let request_handler = AbsRequestHandler {
             snapshot_request_handler: None,
             pruned_banks_receiver,
         };
 
         // Store an account in slot 0
         let account_key = Pubkey::new_unique();
-        bank0.store_account(&account_key, &Account::new(264, 0, &Pubkey::default()));
+        bank0.store_account(
+            &account_key,
+            &AccountSharedData::new(264, 0, &Pubkey::default()),
+        );
         assert!(bank0.get_account(&account_key).is_some());
         pruned_banks_sender.send(0).unwrap();
         AccountsBackgroundService::remove_dead_slots(&bank0, &request_handler, &mut 0, &mut 0);

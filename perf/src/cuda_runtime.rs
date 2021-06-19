@@ -26,7 +26,7 @@ pub fn pin<T>(_mem: &mut Vec<T>) {
 
             let err = (api.cuda_host_register)(
                 _mem.as_mut_ptr() as *mut c_void,
-                _mem.capacity() * size_of::<T>(),
+                _mem.capacity().saturating_mul(size_of::<T>()),
                 0,
             );
             if err != CUDA_SUCCESS {
@@ -34,7 +34,7 @@ pub fn pin<T>(_mem: &mut Vec<T>) {
                     "cudaHostRegister error: {} ptr: {:?} bytes: {}",
                     err,
                     _mem.as_ptr(),
-                    _mem.capacity() * size_of::<T>()
+                    _mem.capacity().saturating_mul(size_of::<T>()),
                 );
             }
         }
@@ -75,6 +75,9 @@ impl<T: Default + Clone + Sized> Reset for PinnedVec<T> {
     }
     fn set_recycler(&mut self, recycler: Weak<RecyclerX<Self>>) {
         self.recycler = Some(recycler);
+    }
+    fn unset_recycler(&mut self) {
+        self.recycler = None;
     }
 }
 
@@ -185,6 +188,14 @@ impl<'a, T: Clone + Send + Sync + Default + Sized> IntoParallelIterator for &'a 
     }
 }
 
+impl<'a, T: Clone + Send + Sync + Default + Sized> IntoParallelIterator for &'a mut PinnedVec<T> {
+    type Iter = rayon::slice::IterMut<'a, T>;
+    type Item = &'a mut T;
+    fn into_par_iter(self) -> Self::Iter {
+        self.x.par_iter_mut()
+    }
+}
+
 impl<T: Clone + Default + Send + Sized> IntoParallelIterator for PinnedVec<T> {
     type Item = T;
     type Iter = rayon::vec::IntoIter<T>;
@@ -268,7 +279,7 @@ impl<T: Clone + Default + Sized> PinnedVec<T> {
     }
 
     pub fn push(&mut self, x: T) {
-        let (old_ptr, old_capacity) = self.prepare_realloc(self.x.len() + 1);
+        let (old_ptr, old_capacity) = self.prepare_realloc(self.x.len().saturating_add(1));
         self.x.push(x);
         self.check_ptr(old_ptr, old_capacity, "push");
     }
@@ -284,13 +295,15 @@ impl<T: Clone + Default + Sized> PinnedVec<T> {
     }
 
     pub fn append(&mut self, other: &mut Vec<T>) {
-        let (old_ptr, old_capacity) = self.prepare_realloc(self.x.len() + other.len());
+        let (old_ptr, old_capacity) =
+            self.prepare_realloc(self.x.len().saturating_add(other.len()));
         self.x.append(other);
         self.check_ptr(old_ptr, old_capacity, "resize");
     }
 
     pub fn append_pinned(&mut self, other: &mut Self) {
-        let (old_ptr, old_capacity) = self.prepare_realloc(self.x.len() + other.len());
+        let (old_ptr, old_capacity) =
+            self.prepare_realloc(self.x.len().saturating_add(other.len()));
         self.x.append(&mut other.x);
         self.check_ptr(old_ptr, old_capacity, "resize");
     }

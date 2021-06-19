@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "accounts-cluster-bench",
     "bench-exchange",
     "bench-streamer",
     "bench-tps",
@@ -76,3 +77,6 @@ members = [
 exclude = [
     "programs/bpf",
 ]
+
+[profile.dev]
+split-debuginfo = "unpacked"

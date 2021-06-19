@@ -105,21 +105,23 @@ function Home() {
         {features && features.length > 0 && (
           <section className={styles.features}>
             <div className="container">
-              <div class="alert alert--primary" role="alert">
-                <b>Announcing the Safecoin x Serum Hackathon</b>
+              <div className="alert alert--primary" role="alert">
+                <b>Announcing the Safecoin Season Hackathon</b>
                 <br />
-                Register today and join leaders from Circle, Aave, SushiSwap,
-                and more!
+                Jumpstart your next project on Safecoin & join the fastest growing
+                ecosystem in crypto
                 <br />
-                <a
-                  href="https://solana.com/defi"
-                  rel="noopener noreferrer"
-                  target="_blank"
-                >
-                  <button class="button button--outline button--secondary">
-                    Register Now
-                  </button>
-                </a>
+                <p align="right">
+                  <a
+                    href="https://solana.com/solanaszn"
+                    rel="noopener noreferrer"
+                    target="_blank"
+                  >
+                    <button className="button button--outline button--secondary">
+                      Register Now
+                    </button>
+                  </a>
+                </p>
               </div>
               <div className="row cards__container">
                 {features.map((props, idx) => (

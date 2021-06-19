@@ -1,3 +1,4 @@
+#![allow(clippy::integer_arithmetic)]
 use log::*;
 use safecoin_bench_tps::bench::{do_bench_tps, generate_and_fund_keypairs, generate_keypairs};
 use safecoin_bench_tps::cli;

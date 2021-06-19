@@ -611,10 +611,7 @@ where
             _ => return Err(err),
         },
     }
-    match deserialize_bincode_cell_data(row_data, table, key) {
-        Ok(result) => Ok(CellData::Bincode(result)),
-        Err(err) => Err(err),
-    }
+    deserialize_bincode_cell_data(row_data, table, key).map(CellData::Bincode)
 }
 
 pub(crate) fn deserialize_protobuf_cell_data<T>(
@@ -687,6 +684,7 @@ mod tests {
                 log_messages: Some(vec![]),
                 pre_token_balances: Some(vec![]),
                 post_token_balances: Some(vec![]),
+                rewards: Some(vec![]),
             }),
         };
         let block = ConfirmedBlock {
@@ -696,6 +694,7 @@ mod tests {
             previous_blockhash: Hash::default().to_string(),
             rewards: vec![],
             block_time: Some(1_234_567_890),
+            block_height: Some(1),
         };
         let bincode_block = compress_best(
             &bincode::serialize::<StoredConfirmedBlock>(&block.clone().into()).unwrap(),
@@ -738,6 +737,7 @@ mod tests {
                 meta.log_messages = None; // Legacy bincode implementation does not support log_messages
                 meta.pre_token_balances = None; // Legacy bincode implementation does not support token balances
                 meta.post_token_balances = None; // Legacy bincode implementation does not support token balances
+                meta.rewards = None; // Legacy bincode implementation does not support rewards
             }
             assert_eq!(block, bincode_block.into());
         } else {

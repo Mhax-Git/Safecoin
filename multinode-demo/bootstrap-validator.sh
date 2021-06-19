@@ -97,8 +97,6 @@ ledger_dir="$SAFECOIN_CONFIG_DIR"/bootstrap-validator
 }
 
 args+=(
-  --enable-rpc-exit
-  --enable-rpc-set-log-filter
   --require-tower
   --ledger "$ledger_dir"
   --rpc-port 8328
@@ -106,6 +104,8 @@ args+=(
   --identity "$identity"
   --vote-account "$vote_account"
   --rpc-faucet-address 127.0.0.1:9900
+  --no-poh-speed-test
+  --no-wait-for-vote-to-start-leader
 )
 default_arg --gossip-port 10015
 default_arg --log -
@@ -152,4 +152,3 @@ while true; do
 
   kill_node
 done
-

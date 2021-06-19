@@ -1,3 +1,4 @@
+#![allow(clippy::integer_arithmetic)]
 #[macro_use]
 extern crate log;
 use clap::{crate_description, crate_name, value_t, App, Arg};
@@ -5,10 +6,10 @@ use rayon::prelude::*;
 use solana_measure::measure::Measure;
 use solana_runtime::{
     accounts::{create_test_accounts, update_accounts_bench, Accounts},
-    accounts_index::Ancestors,
+    accounts_index::{AccountSecondaryIndexes, Ancestors},
 };
 use solana_sdk::{genesis_config::ClusterType, pubkey::Pubkey};
-use std::{collections::HashSet, env, fs, path::PathBuf};
+use std::{env, fs, path::PathBuf};
 
 fn main() {
     solana_logger::setup();
@@ -57,8 +58,12 @@ fn main() {
     if fs::remove_dir_all(path.clone()).is_err() {
         println!("Warning: Couldn't remove {:?}", path);
     }
-    let accounts =
-        Accounts::new_with_config(vec![path], &ClusterType::Testnet, HashSet::new(), false);
+    let accounts = Accounts::new_with_config(
+        vec![path],
+        &ClusterType::Testnet,
+        AccountSecondaryIndexes::default(),
+        false,
+    );
     println!("Creating {} accounts", num_accounts);
     let mut create_time = Measure::start("create accounts");
     let pubkeys: Vec<_> = (0..num_slots)
@@ -102,17 +107,15 @@ fn main() {
         } else {
             let mut pubkeys: Vec<Pubkey> = vec![];
             let mut time = Measure::start("hash");
-            let results = accounts
-                .accounts_db
-                .update_accounts_hash(0, &ancestors, true);
+            let results = accounts.accounts_db.update_accounts_hash(0, &ancestors);
             time.stop();
             let mut time_store = Measure::start("hash using store");
             let results_store = accounts.accounts_db.update_accounts_hash_with_index_option(
-                true,
+                false,
                 false,
                 solana_sdk::clock::Slot::default(),
                 &ancestors,
-                true,
+                None,
             );
             time_store.stop();
             if results != results_store {

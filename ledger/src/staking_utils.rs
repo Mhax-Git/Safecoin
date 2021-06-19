@@ -11,7 +11,7 @@ pub fn get_supermajority_slot(bank: &Bank, epoch: Epoch) -> Option<u64> {
     // Find the amount of stake needed for supermajority
     let stakes_and_lockouts = epoch_stakes_and_lockouts(bank, epoch);
     let total_stake: u64 = stakes_and_lockouts.iter().map(|s| s.0).sum();
-    let supermajority_stake = total_stake * 1 / 2;
+    let supermajority_stake = total_stake * 2 / 3;
 
     // Filter out the states that don't have a max lockout
     find_supermajority_slot(supermajority_stake, stakes_and_lockouts.iter())
@@ -68,7 +68,7 @@ pub(crate) mod tests {
     use rand::Rng;
     use solana_runtime::vote_account::{ArcVoteAccount, VoteAccounts};
     use solana_sdk::{
-        account::{from_account, Account},
+        account::{from_account, AccountSharedData},
         clock::Clock,
         instruction::Instruction,
         pubkey::Pubkey,
@@ -212,7 +212,8 @@ pub(crate) mod tests {
         let mut result: Vec<_> = epoch_stakes_and_lockouts(&bank, next_leader_schedule_epoch);
         result.sort();
         let stake_history =
-            from_account::<StakeHistory>(&bank.get_account(&stake_history::id()).unwrap()).unwrap();
+            from_account::<StakeHistory, _>(&bank.get_account(&stake_history::id()).unwrap())
+                .unwrap();
         let mut expected = vec![
             (
                 leader_stake.stake(bank.epoch(), Some(&stake_history), true),
@@ -309,7 +310,7 @@ pub(crate) mod tests {
         ));
         let mut rng = rand::thread_rng();
         let vote_accounts = stakes.into_iter().map(|(stake, vote_state)| {
-            let account = Account::new_data(
+            let account = AccountSharedData::new_data(
                 rng.gen(), // lamports
                 &VoteStateVersions::new_current(vote_state),
                 &Pubkey::new_unique(), // owner

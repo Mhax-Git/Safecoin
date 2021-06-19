@@ -1,4 +1,5 @@
 #![feature(test)]
+#![allow(clippy::integer_arithmetic)]
 
 extern crate test;
 
@@ -85,7 +86,7 @@ pub fn create_native_loader_transactions(
 }
 
 fn sync_bencher(bank: &Arc<Bank>, _bank_client: &BankClient, transactions: &[Transaction]) {
-    let results = bank.process_transactions(&transactions);
+    let results = bank.process_transactions(transactions);
     assert!(results.iter().all(Result::is_ok));
 }
 

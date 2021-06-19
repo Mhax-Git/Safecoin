@@ -1,5 +1,6 @@
 // @flow
 
+import {Buffer} from 'buffer';
 import * as BufferLayout from 'buffer-layout';
 
 import {Account} from './account';
@@ -67,7 +68,7 @@ export class Loader {
       // Fetch program account info to check if it has already been created
       const programInfo = await connection.getAccountInfo(
         program.publicKey,
-        'singleGossip',
+        'confirmed',
       );
 
       let transaction: Transaction | null = null;
@@ -127,7 +128,7 @@ export class Loader {
           transaction,
           [payer, program],
           {
-            commitment: 'singleGossip',
+            commitment: 'confirmed',
           },
         );
       }
@@ -168,7 +169,7 @@ export class Loader {
       });
       transactions.push(
         sendAndConfirmTransaction(connection, transaction, [payer, program], {
-          commitment: 'singleGossip',
+          commitment: 'confirmed',
         }),
       );
 
@@ -208,7 +209,7 @@ export class Loader {
         transaction,
         [payer, program],
         {
-          commitment: 'singleGossip',
+          commitment: 'confirmed',
         },
       );
     }

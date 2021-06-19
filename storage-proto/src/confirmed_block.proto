@@ -9,6 +9,7 @@ message ConfirmedBlock {
     repeated ConfirmedTransaction transactions = 4;
     repeated Reward rewards = 5;
     UnixTimestamp block_time = 6;
+    BlockHeight block_height = 7;
 }
 
 message ConfirmedTransaction {
@@ -43,6 +44,7 @@ message TransactionStatusMeta {
     repeated string log_messages = 6;
     repeated TokenBalance pre_token_balances = 7;
     repeated TokenBalance post_token_balances = 8;
+    repeated Reward rewards = 9;
 }
 
 message TransactionError {
@@ -70,6 +72,7 @@ message UiTokenAmount {
     double ui_amount = 1;
     uint32 decimals = 2;
     string amount = 3;
+    string ui_amount_string = 4;
 }
 
 enum RewardType {
@@ -93,4 +96,8 @@ message Rewards {
 
 message UnixTimestamp {
     int64 timestamp = 1;
+}
+
+message BlockHeight {
+    uint64 block_height = 1;
 }

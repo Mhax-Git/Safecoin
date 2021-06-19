@@ -75,7 +75,8 @@ impl Config {
             .set_scheme(if is_secure { "wss" } else { "ws" })
             .expect("unable to set scheme");
         if let Some(port) = json_rpc_url.port() {
-            ws_url.set_port(Some(port + 1)).expect("unable to set port");
+            let port = port.checked_add(1).expect("port out of range");
+            ws_url.set_port(Some(port)).expect("unable to set port");
         }
         ws_url.to_string()
     }
@@ -106,18 +107,18 @@ mod test {
     #[test]
     fn compute_websocket_url() {
         assert_eq!(
-            Config::compute_websocket_url(&"http://devnet.safecoin.org"),
-            "ws://devnet.safecoin.org/".to_string()
+            Config::compute_websocket_url(&"http://api.devnet.safecoin.org"),
+            "ws://api.devnet.safecoin.org/".to_string()
         );
 
         assert_eq!(
-            Config::compute_websocket_url(&"https://devnet.safecoin.org"),
-            "wss://devnet.safecoin.org/".to_string()
+            Config::compute_websocket_url(&"https://api.devnet.safecoin.org"),
+            "wss://api.devnet.safecoin.org/".to_string()
         );
 
         assert_eq!(
             Config::compute_websocket_url(&"http://example.com:8328"),
-            "ws://example.com:8329/".to_string()
+            "ws://example.com:8900/".to_string()
         );
         assert_eq!(
             Config::compute_websocket_url(&"https://example.com:1234"),

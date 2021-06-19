@@ -21,7 +21,7 @@ cluster.
 For example to target the Devnet cluster, run:
 
 ```bash
-safecoin config set --url https://devnet.safecoin.org
+safecoin config set --url https://api.devnet.safecoin.org
 ```
 
 ## Ensure Versions Match

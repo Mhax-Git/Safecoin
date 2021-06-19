@@ -5,8 +5,8 @@ title: Calling Between Programs
 ## Cross-Program Invocations
 
 The Safecoin runtime allows programs to call each other via a mechanism called
-cross-program invocation.  Calling between programs is achieved by one program
-invoking an instruction of the other.  The invoking program is halted until the
+cross-program invocation. Calling between programs is achieved by one program
+invoking an instruction of the other. The invoking program is halted until the
 invoked program finishes processing the instruction.
 
 For example, a client could create a transaction that modifies two accounts,
@@ -57,7 +57,7 @@ given instruction to the `token` program via the instruction's `program_id`
 field.
 
 Note that `invoke` requires the caller to pass all the accounts required by the
-instruction being invoked.  This means that both the executable account (the
+instruction being invoked. This means that both the executable account (the
 ones that matches the instruction's program id) and the accounts passed to the
 instruction procesor.
 
@@ -155,7 +155,7 @@ Program derived address:
    such a way that no external user can generate valid transactions with
    signatures for those addresses.
 
-2. Allow programs to programmatically sign for programa addresses that are
+2. Allow programs to programmatically sign for program addresses that are
    present in instructions invoked via [Cross-Program Invocations](#cross-program-invocations).
 
 Given the two conditions, users can securely transfer or assign the authority of
@@ -166,28 +166,28 @@ authority elsewhere at its discretion.
 
 A Program address does not lie on the ed25519 curve and therefore has no valid
 private key associated with it, and thus generating a signature for it is
-impossible.  While it has no private key of its own, it can be used by a program
+impossible. While it has no private key of its own, it can be used by a program
 to issue an instruction that includes the Program address as a signer.
 
 ### Hash-based generated program addresses
 
 Program addresses are deterministically derived from a collection of seeds and a
-program id using a 256-bit pre-image resistant hash function.  Program address
+program id using a 256-bit pre-image resistant hash function. Program address
 must not lie on the ed25519 curve to ensure there is no associated private key.
 During generation an error will be returned if the address is found to lie on
-the curve.  There is about a 50/50 change of this happening for a given
-collection of seeds and program id.  If this occurs a different set of seeds or
+the curve. There is about a 50/50 chance of this happening for a given
+collection of seeds and program id. If this occurs a different set of seeds or
 a seed bump (additional 8 bit seed) can be used to find a valid program address
 off the curve.
 
 Deterministic program addresses for programs follow a similar derivation path as
 Accounts created with `SystemInstruction::CreateAccountWithSeed` which is
-implemented with `system_instruction::create_address_with_seed`.
+implemented with `Pubkey::create_with_seed`.
 
 For reference that implementation is as follows:
 
 ```rust,ignore
-pub fn create_address_with_seed(
+pub fn create_with_seed(
     base: &Pubkey,
     seed: &str,
     program_id: &Pubkey,
@@ -215,12 +215,33 @@ pub fn create_program_address(
     seeds: &[&[u8]],
     program_id: &Pubkey,
 ) -> Result<Pubkey, PubkeyError>
+
+/// Find a valid off-curve derived program address and its bump seed
+///     * seeds, symbolic keywords used to derive the key
+///     * program_id, program that the address is derived for
+pub fn find_program_address(
+    seeds: &[&[u8]],
+    program_id: &Pubkey,
+) -> Option<(Pubkey, u8)> {
+    let mut bump_seed = [std::u8::MAX];
+    for _ in 0..std::u8::MAX {
+        let mut seeds_with_bump = seeds.to_vec();
+        seeds_with_bump.push(&bump_seed);
+        if let Ok(address) = create_program_address(&seeds_with_bump, program_id) {
+            return Some((address, bump_seed[0]));
+        }
+        bump_seed[0] -= 1;
+    }
+    None
+}
 ```
 
 ### Using program addresses
 
 Clients can use the `create_program_address` function to generate a destination
-address.
+address. In this example, we assume that
+`create_program_address(&[&["escrow]], &escrow_program_id)` generates a valid
+program address that is off the curve.
 
 ```rust,ignore
 // deterministically derive the escrow key
@@ -242,9 +263,8 @@ as if it had the private key to sign the transaction.
 ```rust,ignore
 fn transfer_one_token_from_escrow(
     program_id: &Pubkey,
-    keyed_accounts: &[KeyedAccount]
-) -> Result<()> {
-
+    accounts: &[AccountInfo],
+) -> ProgramResult {
     // User supplies the destination
     let alice_pubkey = keyed_accounts[1].unsigned_key();
 
@@ -258,16 +278,64 @@ fn transfer_one_token_from_escrow(
     // executing program ID and the supplied keywords.
     // If the derived address matches a key marked as signed in the instruction
     // then that key is accepted as signed.
-    invoke_signed(&instruction,  &[&["escrow"]])?
+    invoke_signed(&instruction, accounts, &[&["escrow"]])
 }
 ```
 
+Note that the address generated using `create_program_address` is not guaranteed
+to be a valid program address off the curve. For example, let's assume that the
+seed `"escrow2"` does not generate a valid program address.
+
+To generate a valid program address using `"escrow2` as a seed, use
+`find_program_address`, iterating through possible bump seeds until a valid
+combination is found. The preceding example becomes:
+
+```rust,ignore
+// find the escrow key and valid bump seed
+let (escrow_pubkey2, escrow_bump_seed) = find_program_address(&[&["escrow2"]], &escrow_program_id);
+
+// construct a transfer message using that key
+let message = Message::new(vec![
+    token_instruction::transfer(&alice_pubkey, &escrow_pubkey2, 1),
+]);
+
+// process the message which transfer one 1 token to the escrow
+client.send_and_confirm_message(&[&alice_keypair], &message);
+```
+
+Within the program, this becomes:
+
+```rust,ignore
+fn transfer_one_token_from_escrow2(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+) -> ProgramResult {
+    // User supplies the destination
+    let alice_pubkey = keyed_accounts[1].unsigned_key();
+
+    // Iteratively derive the escrow pubkey
+    let (escrow_pubkey2, bump_seed) = find_program_address(&[&["escrow2"]], program_id);
+
+    // Create the transfer instruction
+    let instruction = token_instruction::transfer(&escrow_pubkey2, &alice_pubkey, 1);
+
+    // Include the generated bump seed to the list of all seeds
+    invoke_signed(&instruction, accounts, &[&["escrow2", &[bump_seed]]])
+}
+```
+
+Since `find_program_address` requires iterating over a number of calls to
+`create_program_address`, it may use more
+[compute budget](developing/programming-model/runtime.md#compute-budget) when
+used on-chain. To reduce the compute cost, use `find_program_address` off-chain
+and pass the resulting bump seed to the program.
+
 ### Instructions that require signers
 
-The addresses generated with `create_program_address` are indistinguishable from
-any other public key. The only way for the runtime to verify that the address
-belongs to a program is for the program to supply the seeds used to generate the
-address.
+The addresses generated with `create_program_address` and `find_program_address`
+are indistinguishable from any other public key. The only way for the runtime to
+verify that the address belongs to a program is for the program to supply the
+seeds used to generate the address.
 
 The runtime will internally call `create_program_address`, and compare the
 result against the addresses supplied in the instruction.
@@ -275,7 +343,7 @@ result against the addresses supplied in the instruction.
 ## Examples
 
 Refer to [Developing with
-Rust](developing/deployed-programs/../../../deployed-programs/developing-rust.md#examples)
+Rust](developing/on-chain-programs/../../../on-chain-programs/developing-rust.md#examples)
 and [Developing with
-C](developing/deployed-programs/../../../deployed-programs/developing-c.md#examples)
+C](developing/on-chain-programs/../../../on-chain-programs/developing-c.md#examples)
 for examples of how to use cross-program invocation.

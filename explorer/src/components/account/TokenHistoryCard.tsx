@@ -25,7 +25,7 @@ import {
   useFetchTransactionDetails,
   useTransactionDetailsCache,
 } from "providers/transactions/details";
-import { coerce } from "superstruct";
+import { create } from "superstruct";
 import { ParsedInfo } from "validators";
 import {
   TokenInstructionType,
@@ -38,6 +38,10 @@ import {
   parseTokenSwapInstructionTitle,
 } from "components/instruction/token-swap/types";
 import {
+  isTokenLendingInstruction,
+  parseTokenLendingInstructionTitle,
+} from "components/instruction/token-lending/types";
+import {
   isSerumInstruction,
   parseSerumInstructionTitle,
 } from "components/instruction/serum/types";
@@ -46,6 +50,8 @@ import { useCluster, Cluster } from "providers/cluster";
 import { Link } from "react-router-dom";
 import { Location } from "history";
 import { useQuery } from "utils/url";
+import { TokenInfoMap } from "@solana/spl-token-registry";
+import { useTokenRegistry } from "providers/mints/token-registry";
 
 const TRUNCATE_TOKEN_LENGTH = 10;
 const ALL_TOKENS = "";
@@ -295,6 +301,7 @@ function TokenHistoryTable({ tokens }: { tokens: TokenInfoWithPubkey[] }) {
 
 const FilterDropdown = ({ filter, toggle, show, tokens }: FilterProps) => {
   const { cluster } = useCluster();
+  const { tokenRegistry } = useTokenRegistry();
 
   const buildLocation = (location: Location, filter: string) => {
     const params = new URLSearchParams(location.search);
@@ -315,7 +322,7 @@ const FilterDropdown = ({ filter, toggle, show, tokens }: FilterProps) => {
   tokens.forEach((token) => {
     const pubkey = token.info.mint.toBase58();
     filterOptions.push(pubkey);
-    nameLookup[pubkey] = formatTokenName(pubkey, cluster);
+    nameLookup[pubkey] = formatTokenName(pubkey, cluster, tokenRegistry);
   });
 
   return (
@@ -345,7 +352,7 @@ const FilterDropdown = ({ filter, toggle, show, tokens }: FilterProps) => {
             >
               {filterOption === ALL_TOKENS
                 ? "All Tokens"
-                : formatTokenName(filterOption, cluster)}
+                : formatTokenName(filterOption, cluster, tokenRegistry)}
             </Link>
           );
         })}
@@ -359,9 +366,9 @@ function instructionTypeName(
   tx: ConfirmedSignatureInfo
 ): string {
   try {
-    const parsed = coerce(ix.parsed, ParsedInfo);
+    const parsed = create(ix.parsed, ParsedInfo);
     const { type: rawType } = parsed;
-    const type = coerce(rawType, TokenInstructionType);
+    const type = create(rawType, TokenInstructionType);
     return IX_TITLES[type];
   } catch (err) {
     reportError(err, { signature: tx.signature });
@@ -489,6 +496,16 @@ const TokenTransactionRow = React.memo(
               reportError(error, { signature: tx.signature });
               return undefined;
             }
+          } else if (
+            transactionInstruction &&
+            isTokenLendingInstruction(transactionInstruction)
+          ) {
+            try {
+              name = parseTokenLendingInstructionTitle(transactionInstruction);
+            } catch (error) {
+              reportError(error, { signature: tx.signature });
+              return undefined;
+            }
           } else {
             if (
               ix.accounts.findIndex((account) =>
@@ -588,8 +605,12 @@ function InstructionDetails({
   );
 }
 
-function formatTokenName(pubkey: string, cluster: Cluster): string {
-  let display = displayAddress(pubkey, cluster);
+function formatTokenName(
+  pubkey: string,
+  cluster: Cluster,
+  tokenRegistry: TokenInfoMap
+): string {
+  let display = displayAddress(pubkey, cluster, tokenRegistry);
 
   if (display === pubkey) {
     display = display.slice(0, TRUNCATE_TOKEN_LENGTH) + "\u2026";

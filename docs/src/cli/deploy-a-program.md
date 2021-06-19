@@ -7,7 +7,7 @@ smart contracts elsewhere) with the Safecoin tools.
 
 To learn about developing and executing programs on Safecoin, start with the
 [overview](developing/programming-model/overview.md) and then dig into the
-details of [deployed programs](developing/deployed-programs/overview.md).
+details of [on-chain programs](developing/on-chain-programs/overview.md).
 
 To deploy a program, use the Safecoin tools to interact with the on-chain loader
 to:
@@ -69,6 +69,7 @@ An example output looks like:
 
 ```bash
 Program Id: 3KS2k14CmtnuVv2fvYcvdrNgC94Y11WETBpMUGgXyWZL
+Owner: BPFLoaderUpgradeab1e11111111111111111111111
 ProgramData Address: EHsACWBhgmw8iq5dmUZzTA1esRqcTognhKNHUkPi4q4g
 Authority: FwoGJNUaJN2zfVEex9BB11Dqb3NJKy3e9oY3KTh9XzCU
 Last Deployed In Slot: 63890568
@@ -77,17 +78,18 @@ Data Length: 5216 (0x1460) bytes
 
 - `Program Id` is the address that can be referenced in an instruction's
   `program_id` field when invoking a program.
+- `Owner`: The loader this program was deployed with.
 - `ProgramData Address` is the account associated with the program account that
   holds the program's data (shared object).
 - `Authority` is the program's upgrade authority.
 - `Last Deployed In Slot` is the slot in which the program was last deployed.
-- `Data Length` is the size of the space reserved for deployments.  The actual
+- `Data Length` is the size of the space reserved for deployments. The actual
   space used by the currently deployed program may be less.
 
 ### Redeploy a program
 
 A program can be redeployed to the same address to facilitate rapid development,
-bug fixes, or upgrades.  Matching keypair files are generated once so that
+bug fixes, or upgrades. Matching keypair files are generated once so that
 redeployments will be to the same program address.
 
 The command looks the same as the deployment command:
@@ -97,10 +99,10 @@ safecoin program deploy <PROGRAM_FILEPATH>
 ```
 
 By default, programs are deployed to accounts that are twice the size of the
-original deployment.  Doing so leaves room for program growth in future
-redeployments.  But, if the initially deployed program is very small (like a
+original deployment. Doing so leaves room for program growth in future
+redeployments. But, if the initially deployed program is very small (like a
 simple helloworld program) and then later grows substantially, the redeployment
-may fail.  To avoid this, specify a `max_len` that is at least the size (in
+may fail. To avoid this, specify a `max_len` that is at least the size (in
 bytes) that the program is expected to become (plus some wiggle room).
 
 ```bash
@@ -112,11 +114,100 @@ Note that program accounts are required to be
 `max-len` is fixed after initial deployment, so any SAFE in the program accounts
 is locked up permanently.
 
+### Resuming a failed deploy
+
+If program deployment fails, there will be a hanging intermediate buffer account
+that contains a non-zero balance. In order to recoup that balance you may
+resume a failed deployment by providing the same intermediate buffer to a new
+call to `deploy`.
+
+Deployment failures will print an error message specifying the seed phrase
+needed to recover the generated intermediate buffer's keypair:
+
+```
+==================================================================================
+Recover the intermediate account's ephemeral keypair file with
+`safecoin-keygen recover` and the following 12-word seed phrase:
+==================================================================================
+valley flat great hockey share token excess clever benefit traffic avocado athlete
+==================================================================================
+To resume a deploy, pass the recovered keypair as
+the [PROGRAM_ADDRESS_SIGNER] argument to `safecoin deploy` or
+as the [BUFFER_SIGNER] to `safecoin program deploy` or `safecoin write-buffer'.
+Or to recover the account's lamports, pass it as the
+[BUFFER_ACCOUNT_ADDRESS] argument to `safecoin program drain`.
+==================================================================================
+```
+
+To recover the keypair:
+
+```bash
+safecoin-keygen recover -o <KEYPAIR_PATH>
+```
+
+When asked, enter the 12-word seed phrase.
+
+Then issue a new `deploy` command and specify the buffer:
+
+```bash
+safecoin program deploy --buffer <KEYPAIR_PATH> <PROGRAM_FILEPATH>
+```
+
+### Closing buffer accounts and reclaiming their lamports
+
+If deployment fails there will be a left over buffer account that holds
+lamports. The buffer account can either be used to [resume a
+deploy](#resuming-a-failed-deploy) or closed. When closed, the full balance of
+the buffer account will be transferred to the recipient's account.
+
+The buffer account's authority must be present to close a buffer account, to
+list all the open buffer accounts that match the default authority:
+
+```bash
+safecoin program show --buffers
+```
+
+To specify a different authority:
+
+```bash
+safecoin program show --buffers --buffer-authority <AURTHORITY_ADRESS>
+```
+
+To close a single account:
+
+```bash
+safecoin program close <BUFFER_ADDRESS>
+```
+
+To close a single account and specify a different authority than the default:
+
+```bash
+safecoin program close <BUFFER_ADDRESS> --buffer-authority <KEYPAIR_FILEPATH>
+```
+
+To close a single account and specify a different recipient than the default:
+
+```bash
+safecoin program close <BUFFER_ADDRESS> --recipient <RECIPIENT_ADDRESS>
+```
+
+To close all the buffer accounts associated with the current authority:
+
+```bash
+safecoin program close --buffers
+```
+
+To show all buffer accounts regardless of the authority
+
+```bash
+safecoin program show --buffers --all
+```
+
 ### Set a program's upgrade authority
 
-The program's upgrade authority must to be present to deploy a program.  If no
+The program's upgrade authority must to be present to deploy a program. If no
 authority is specified during program deployment, the default keypair is used as
-the authority.  This is why redeploying a program in the steps above didn't
+the authority. This is why redeploying a program in the steps above didn't
 require an authority to be explicitly specified.
 
 The authority can be specified during deployment:
@@ -171,11 +262,11 @@ safecoin program dump <ACCOUNT_ADDRESS> <OUTPUT_FILEPATH>
 ```
 
 The dumped file will be in the same as what was deployed, so in the case of a
-shared object, the dumped file will be a fully functional shared object.  Note
+shared object, the dumped file will be a fully functional shared object. Note
 that the `dump` command dumps the entire data space, which means the output file
 will have trailing zeros after the shared object's data up to `max_len`.
 Sometimes it is useful to dump and compare a program to ensure it matches a
-known program binary.  The original program file can be zero-extended, hashed,
+known program binary. The original program file can be zero-extended, hashed,
 and compared to the hash of the dumped file.
 
 ```bash
@@ -188,12 +279,12 @@ $ sha256sum extended.so dump.so
 ### Using an intermediary Buffer account
 
 Instead of deploying directly to the program account, the program can be written
-to an intermediary buffer account.  Intermediary accounts can useful for things
+to an intermediary buffer account. Intermediary accounts can useful for things
 like multi-entity governed programs where the governing members fist verify the
 intermediary buffer contents and then vote to allow an upgrade using it.
 
 ```bash
-safecoin progrma write-buffer <PROGRAM_FILEPATH>
+safecoin program write-buffer <PROGRAM_FILEPATH>
 ```
 
 Buffer accounts support authorities like program accounts:

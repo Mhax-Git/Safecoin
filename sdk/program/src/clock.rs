@@ -6,6 +6,8 @@ pub const DEFAULT_TICKS_PER_SECOND: u64 = 160;
 
 pub const MS_PER_TICK: u64 = 1000 / DEFAULT_TICKS_PER_SECOND;
 
+pub const SLOT_MS: u64 = (DEFAULT_TICKS_PER_SLOT * 1000) / DEFAULT_TICKS_PER_SECOND;
+
 // At 160 ticks/s, 64 ticks per slot implies that leader rotation and voting will happen
 // every 400 ms. A fast voting cadence ensures faster finality and convergence
 pub const DEFAULT_TICKS_PER_SLOT: u64 = 64;
@@ -61,6 +63,8 @@ pub type Slot = u64;
 pub type Epoch = u64;
 
 pub const GENESIS_EPOCH: Epoch = 0;
+// must be sync with Account::rent_epoch::default()
+pub const INITIAL_RENT_EPOCH: Epoch = 0;
 
 /// SlotIndex is an index to the slots of a epoch
 pub type SlotIndex = u64;
@@ -78,7 +82,7 @@ pub type UnixTimestamp = i64;
 ///  as the network progresses).
 ///
 #[repr(C)]
-#[derive(Serialize, Deserialize, Debug, Default, PartialEq)]
+#[derive(Serialize, Clone, Deserialize, Debug, Default, PartialEq)]
 pub struct Clock {
     /// the current network/bank Slot
     pub slot: Slot,

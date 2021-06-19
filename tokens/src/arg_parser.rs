@@ -37,7 +37,7 @@ where
                 .global(true)
                 .takes_value(true)
                 .value_name("URL")
-                .help("RPC entrypoint address. i.e. http://devnet.safecoin.org"),
+                .help("RPC entrypoint address. i.e. http://api.devnet.safecoin.org"),
         )
         .subcommand(
             SubCommand::with_name("distribute-tokens")
@@ -410,15 +410,16 @@ fn parse_distribute_stake_args(
     )?;
 
     let lockup_authority_str = value_t!(matches, "lockup_authority", String).ok();
-    let lockup_authority = match lockup_authority_str {
-        Some(path) => Some(signer_from_path(
-            &signer_matches,
-            &path,
-            "lockup authority",
-            &mut wallet_manager,
-        )?),
-        None => None,
-    };
+    let lockup_authority = lockup_authority_str
+        .map(|path| {
+            signer_from_path(
+                &signer_matches,
+                &path,
+                "lockup authority",
+                &mut wallet_manager,
+            )
+        })
+        .transpose()?;
 
     let stake_args = StakeArgs {
         stake_account_address,

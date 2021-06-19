@@ -1,5 +1,5 @@
-use crate::StoredExtendedRewards;
-use solana_account_decoder::parse_token::UiTokenAmount;
+use crate::{StoredExtendedRewards, StoredTransactionStatusMeta};
+use solana_account_decoder::parse_token::{real_number_string_trimmed, UiTokenAmount};
 use solana_sdk::{
     hash::Hash,
     instruction::CompiledInstruction,
@@ -14,7 +14,10 @@ use solana_transaction_status::{
     ConfirmedBlock, InnerInstructions, Reward, RewardType, TransactionByAddrInfo,
     TransactionStatusMeta, TransactionTokenBalance, TransactionWithStatusMeta,
 };
-use std::convert::{TryFrom, TryInto};
+use std::{
+    convert::{TryFrom, TryInto},
+    str::FromStr,
+};
 
 pub mod generated {
     include!(concat!(
@@ -115,6 +118,7 @@ impl From<ConfirmedBlock> for generated::ConfirmedBlock {
             transactions,
             rewards,
             block_time,
+            block_height,
         } = confirmed_block;
 
         Self {
@@ -124,6 +128,7 @@ impl From<ConfirmedBlock> for generated::ConfirmedBlock {
             transactions: transactions.into_iter().map(|tx| tx.into()).collect(),
             rewards: rewards.into_iter().map(|r| r.into()).collect(),
             block_time: block_time.map(|timestamp| generated::UnixTimestamp { timestamp }),
+            block_height: block_height.map(|block_height| generated::BlockHeight { block_height }),
         }
     }
 }
@@ -140,6 +145,7 @@ impl TryFrom<generated::ConfirmedBlock> for ConfirmedBlock {
             transactions,
             rewards,
             block_time,
+            block_height,
         } = confirmed_block;
 
         Ok(Self {
@@ -152,17 +158,14 @@ impl TryFrom<generated::ConfirmedBlock> for ConfirmedBlock {
                 .collect::<std::result::Result<Vec<TransactionWithStatusMeta>, Self::Error>>()?,
             rewards: rewards.into_iter().map(|r| r.into()).collect(),
             block_time: block_time.map(|generated::UnixTimestamp { timestamp }| timestamp),
+            block_height: block_height.map(|generated::BlockHeight { block_height }| block_height),
         })
     }
 }
 
 impl From<TransactionWithStatusMeta> for generated::ConfirmedTransaction {
     fn from(value: TransactionWithStatusMeta) -> Self {
-        let meta = if let Some(meta) = value.meta {
-            Some(meta.into())
-        } else {
-            None
-        };
+        let meta = value.meta.map(|meta| meta.into());
         Self {
             transaction: Some(value.transaction.into()),
             meta,
@@ -173,11 +176,7 @@ impl From<TransactionWithStatusMeta> for generated::ConfirmedTransaction {
 impl TryFrom<generated::ConfirmedTransaction> for TransactionWithStatusMeta {
     type Error = bincode::Error;
     fn try_from(value: generated::ConfirmedTransaction) -> std::result::Result<Self, Self::Error> {
-        let meta = if let Some(meta) = value.meta {
-            Some(meta.try_into()?)
-        } else {
-            None
-        };
+        let meta = value.meta.map(|meta| meta.try_into()).transpose()?;
         Ok(Self {
             transaction: value.transaction.expect("transaction is required").into(),
             meta,
@@ -272,6 +271,7 @@ impl From<TransactionStatusMeta> for generated::TransactionStatusMeta {
             log_messages,
             pre_token_balances,
             post_token_balances,
+            rewards,
         } = value;
         let err = match status {
             Ok(()) => None,
@@ -295,6 +295,11 @@ impl From<TransactionStatusMeta> for generated::TransactionStatusMeta {
             .into_iter()
             .map(|balance| balance.into())
             .collect();
+        let rewards = rewards
+            .unwrap_or_default()
+            .into_iter()
+            .map(|reward| reward.into())
+            .collect();
 
         Self {
             err,
@@ -305,7 +310,15 @@ impl From<TransactionStatusMeta> for generated::TransactionStatusMeta {
             log_messages,
             pre_token_balances,
             post_token_balances,
+            rewards,
         }
+    }
+}
+
+impl From<StoredTransactionStatusMeta> for generated::TransactionStatusMeta {
+    fn from(meta: StoredTransactionStatusMeta) -> Self {
+        let meta: TransactionStatusMeta = meta.into();
+        meta.into()
     }
 }
 
@@ -322,6 +335,7 @@ impl TryFrom<generated::TransactionStatusMeta> for TransactionStatusMeta {
             log_messages,
             pre_token_balances,
             post_token_balances,
+            rewards,
         } = value;
         let status = match &err {
             None => Ok(()),
@@ -346,6 +360,7 @@ impl TryFrom<generated::TransactionStatusMeta> for TransactionStatusMeta {
                 .map(|balance| balance.into())
                 .collect(),
         );
+        let rewards = Some(rewards.into_iter().map(|reward| reward.into()).collect());
         Ok(Self {
             status,
             fee,
@@ -355,6 +370,7 @@ impl TryFrom<generated::TransactionStatusMeta> for TransactionStatusMeta {
             log_messages,
             pre_token_balances,
             post_token_balances,
+            rewards,
         })
     }
 }
@@ -383,9 +399,10 @@ impl From<TransactionTokenBalance> for generated::TokenBalance {
             account_index: value.account_index as u32,
             mint: value.mint,
             ui_token_amount: Some(generated::UiTokenAmount {
-                ui_amount: value.ui_token_amount.ui_amount,
+                ui_amount: value.ui_token_amount.ui_amount.unwrap_or_default(),
                 decimals: value.ui_token_amount.decimals as u32,
                 amount: value.ui_token_amount.amount,
+                ui_amount_string: value.ui_token_amount.ui_amount_string,
             }),
         }
     }
@@ -398,9 +415,21 @@ impl From<generated::TokenBalance> for TransactionTokenBalance {
             account_index: value.account_index as u8,
             mint: value.mint,
             ui_token_amount: UiTokenAmount {
-                ui_amount: ui_token_amount.ui_amount,
+                ui_amount: if (ui_token_amount.ui_amount - f64::default()).abs() > f64::EPSILON {
+                    Some(ui_token_amount.ui_amount)
+                } else {
+                    None
+                },
                 decimals: ui_token_amount.decimals as u8,
-                amount: ui_token_amount.amount,
+                amount: ui_token_amount.amount.clone(),
+                ui_amount_string: if !ui_token_amount.ui_amount_string.is_empty() {
+                    ui_token_amount.ui_amount_string
+                } else {
+                    real_number_string_trimmed(
+                        u64::from_str(&ui_token_amount.amount).unwrap_or_default(),
+                        ui_token_amount.decimals as u8,
+                    )
+                },
             },
         }
     }
@@ -483,6 +512,11 @@ impl TryFrom<tx_by_addr::TransactionError> for TransactionError {
                     41 => InstructionError::ProgramFailedToCompile,
                     42 => InstructionError::Immutable,
                     43 => InstructionError::IncorrectAuthority,
+                    44 => InstructionError::BorshIoError(String::new()),
+                    45 => InstructionError::AccountNotRentExempt,
+                    46 => InstructionError::InvalidAccountOwner,
+                    47 => InstructionError::ArithmeticOverflow,
+                    48 => InstructionError::UnsupportedSysvar,
                     _ => return Err("Invalid InstructionError"),
                 };
 
@@ -500,7 +534,7 @@ impl TryFrom<tx_by_addr::TransactionError> for TransactionError {
             3 => TransactionError::ProgramAccountNotFound,
             4 => TransactionError::InsufficientFundsForFee,
             5 => TransactionError::InvalidAccountForFee,
-            6 => TransactionError::DuplicateSignature,
+            6 => TransactionError::AlreadyProcessed,
             7 => TransactionError::BlockhashNotFound,
             9 => TransactionError::CallChainTooDeep,
             10 => TransactionError::MissingSignatureForFee,
@@ -509,6 +543,7 @@ impl TryFrom<tx_by_addr::TransactionError> for TransactionError {
             13 => TransactionError::InvalidProgramForExecution,
             14 => TransactionError::SanitizeFailure,
             15 => TransactionError::ClusterMaintenance,
+            16 => TransactionError::AccountBorrowOutstanding,
             _ => return Err("Invalid TransactionError"),
         })
     }
@@ -534,8 +569,8 @@ impl From<TransactionError> for tx_by_addr::TransactionError {
                 TransactionError::InvalidAccountForFee => {
                     tx_by_addr::TransactionErrorType::InvalidAccountForFee
                 }
-                TransactionError::DuplicateSignature => {
-                    tx_by_addr::TransactionErrorType::DuplicateSignature
+                TransactionError::AlreadyProcessed => {
+                    tx_by_addr::TransactionErrorType::AlreadyProcessed
                 }
                 TransactionError::BlockhashNotFound => {
                     tx_by_addr::TransactionErrorType::BlockhashNotFound
@@ -563,6 +598,9 @@ impl From<TransactionError> for tx_by_addr::TransactionError {
                 }
                 TransactionError::InstructionError(_, _) => {
                     tx_by_addr::TransactionErrorType::InstructionError
+                }
+                TransactionError::AccountBorrowOutstanding => {
+                    tx_by_addr::TransactionErrorType::AccountBorrowOutstandingTx
                 }
             } as i32,
             instruction_error: match transaction_error {
@@ -700,6 +738,21 @@ impl From<TransactionError> for tx_by_addr::TransactionError {
                             InstructionError::IncorrectAuthority => {
                                 tx_by_addr::InstructionErrorType::IncorrectAuthority
                             }
+                            InstructionError::BorshIoError(_) => {
+                                tx_by_addr::InstructionErrorType::BorshIoError
+                            }
+                            InstructionError::AccountNotRentExempt => {
+                                tx_by_addr::InstructionErrorType::AccountNotRentExempt
+                            }
+                            InstructionError::InvalidAccountOwner => {
+                                tx_by_addr::InstructionErrorType::InvalidAccountOwner
+                            }
+                            InstructionError::ArithmeticOverflow => {
+                                tx_by_addr::InstructionErrorType::ArithmeticOverflow
+                            }
+                            InstructionError::UnsupportedSysvar => {
+                                tx_by_addr::InstructionErrorType::UnsupportedSysvar
+                            }
                         } as i32,
                         custom: match instruction_error {
                             InstructionError::Custom(custom) => {
@@ -727,10 +780,7 @@ impl From<TransactionByAddrInfo> for tx_by_addr::TransactionByAddrInfo {
 
         Self {
             signature: <Signature as AsRef<[u8]>>::as_ref(&signature).into(),
-            err: match err {
-                None => None,
-                Some(e) => Some(e.into()),
-            },
+            err: err.map(|e| e.into()),
             index,
             memo: memo.map(|memo| tx_by_addr::Memo { memo }),
             block_time: block_time.map(|timestamp| tx_by_addr::UnixTimestamp { timestamp }),
@@ -744,11 +794,10 @@ impl TryFrom<tx_by_addr::TransactionByAddrInfo> for TransactionByAddrInfo {
     fn try_from(
         transaction_by_addr: tx_by_addr::TransactionByAddrInfo,
     ) -> Result<Self, Self::Error> {
-        let err = if let Some(err) = transaction_by_addr.err {
-            Some(err.try_into()?)
-        } else {
-            None
-        };
+        let err = transaction_by_addr
+            .err
+            .map(|err| err.try_into())
+            .transpose()?;
 
         Ok(Self {
             signature: Signature::new(&transaction_by_addr.signature),
@@ -872,7 +921,7 @@ mod test {
             tx_by_addr_transaction_error.try_into().unwrap()
         );
 
-        let transaction_error = TransactionError::DuplicateSignature;
+        let transaction_error = TransactionError::AlreadyProcessed;
         let tx_by_addr_transaction_error: tx_by_addr::TransactionError =
             transaction_error.clone().into();
         assert_eq!(
