@@ -17,6 +17,7 @@ use solana_sdk::{
     rent::Rent,
     slot_hashes::SlotHash,
     sysvar::clock::Clock,
+    safecoin
 };
 use std::boxed::Box;
 use std::cmp::Ordering;
@@ -716,21 +717,10 @@ pub fn process_vote<S: std::hash::BuildHasher>(
     let mut vote_state = versioned.convert_to_current();
     let authorized_voter = vote_state.get_and_update_authorized_voter(clock.epoch);
 
+    if safecoin::is_voting_denied(&clock.slot,&authorized_voter,&slot_hashes[0].1) {
+	    return Err(InstructionError::UninitializedAccount);
+	}
 
-log::trace!("slot: {}", clock.slot);
-log::trace!("last_hashy: {}", slot_hashes[0].1);
-log::trace!("last_hashzy: {}", slot_hashes[0].0);
-log::trace!("P: {}", authorized_voter.to_string().to_lowercase().find("x").unwrap_or(2) % 10);
-
-
-if (slot_hashes[0].1.to_string().to_lowercase().find("x").unwrap_or(3) % 10 as usize) != (authorized_voter.to_string().to_lowercase().find("x").unwrap_or(2) % 10 as usize) {
-if authorized_voter.to_string() != "83E5RMejo6d98FV1EAXTx5t4bvoDMoxE4DboDee3VJsu" {
-	      return Err(InstructionError::UninitializedAccount);
-              }
-	    }
-
-
-log::info!("authorized_voter: {}", &authorized_voter);
     verify_authorized_signer(&authorized_voter, signers)?;
 
     vote_state.process_vote(vote, slot_hashes, clock.epoch)?;

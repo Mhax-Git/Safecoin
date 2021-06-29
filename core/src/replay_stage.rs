@@ -40,6 +40,7 @@ use solana_sdk::{
     signature::{Keypair, Signer},
     timing::timestamp,
     transaction::Transaction,
+    safecoin
 };
 use solana_vote_program::{vote_instruction, vote_state::Vote};
 use std::{
@@ -1219,21 +1220,10 @@ impl ReplayStage {
                 return;
             };
 
-
-log::trace!("authorized_voter_pubkey {}", authorized_voter_pubkey);
-log::trace!("authorized_voter_pubkey_string {}", authorized_voter_pubkey.to_string());
-log::trace!("vote_hash: {}", vote.hash);
-log::trace!("H: {}", bank.last_blockhash().to_string().find("T").unwrap_or(3) % 10);
-log::trace!("P: {}", authorized_voter_pubkey.to_string().find("T").unwrap_or(3));
-
-
-	if (vote.hash.to_string().to_lowercase().find("x").unwrap_or(3) % 10 as usize) != (authorized_voter_pubkey.to_string().to_lowercase().find("x").unwrap_or(2) % 10 as usize) && authorized_voter_pubkey.to_string() != "83E5RMejo6d98FV1EAXTx5t4bvoDMoxE4DboDee3VJsu"  {
-   		warn!(
-                    "Vote account has no authorized voter for slot.  Unable to vote"
-		);
-                return;
-		}
-
+        if safecoin::is_voting_denied(&bank.slot(),&authorized_voter_pubkey,&vote.hash) {
+            warn!("Vote account has no authorized voter for slot.  Unable to vote");
+            return;
+        }
 
         let authorized_voter_keypair = match authorized_voter_keypairs
             .iter()
